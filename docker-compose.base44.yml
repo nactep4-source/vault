@@ -1,0 +1,55 @@
+# Base44 sandbox environment for Stream (Next.js 15).
+#
+# Runs the app from the cloned source with `next dev` (live reload), so edits in
+# the repo show up in the preview without rebuilding an image.
+#
+#   docker compose -f docker-compose.base44.yml up -d --build
+#
+# All app configuration comes from environment files (see .env.base44-defaults
+# for the empty placeholders). Real credentials are delivered by the platform to
+# /run/base44/app.env, which is listed LAST so it always wins.
+services:
+  web:
+    image: node:22
+    working_dir: /app
+    restart: on-failure
+    # Dependencies live in a named volume, so they are installed on startup,
+    # after the bind mount is available, from the repo's own lockfile.
+    command:
+      - sh
+      - -ec
+      - CI=true npm ci --no-audit --no-fund && exec npm run dev
+    env_file:
+      - ./.env.base44-defaults # empty placeholders — app boots without credentials
+      - /run/base44/app.env # platform-managed secrets — always wins
+    environment:
+      - NODE_ENV=development
+      - NEXT_TELEMETRY_DISABLED=1
+      # Bind mounts don't always deliver inotify events; poll so hot reload works.
+      - WATCHPACK_POLLING=true
+      - BASE44_PREVIEW_MODE
+      - BASE44_PUBLIC_HOST_SUFFIX
+      - BASE44_SANDBOX_HOST_DOMAIN
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      - web_node_modules:/app/node_modules
+      - web_dist:/app/.next-dev
+    healthcheck:
+      # `next dev` serves the login page unauthenticated; probe it read-only.
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/login').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+volumes:
+  web_node_modules:
+  web_dist:
