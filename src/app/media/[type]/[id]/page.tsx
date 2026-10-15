@@ -7,6 +7,7 @@ import { Play, Heart, Check, Plus } from 'lucide-react';
 import AppImage from '@/components/ui/AppImage';
 import { ShimmerImage, ShimmerCard } from '@/components/Shimmer';
 import StreamtapeDownloadButton from '@/components/StreamtapeDownloadButton';
+import DirectStreamPlayer from '@/components/DirectStreamPlayer';
 import {
   getMovieDetails,
   getTVDetails,
@@ -42,6 +43,11 @@ interface EmbedSource {
   // Load this source through /api/embed by default because its player ships
   // popup/overlay ad scripts. The viewer can still turn clean mode off.
   cleanByDefault?: boolean;
+  // Our own player rather than a third-party embed: the media page renders
+  // DirectStreamPlayer for this source instead of this URL in an iframe. The
+  // URL is still meaningful — it is the public /embed route, i.e. the link to
+  // hand to someone else's iframe.
+  own?: boolean;
   getUrl: (tmdbId: string, type: 'movie' | 'tv', season?: number, episode?: number) => string;
 }
 
@@ -49,6 +55,19 @@ const DEFAULT_ALLOW = 'autoplay; fullscreen; picture-in-picture; encrypted-media
 const DEFAULT_REFERRER_POLICY: React.HTMLAttributeReferrerPolicy = 'origin';
 
 const EMBED_SOURCES: EmbedSource[] = [
+  {
+    // Our own player on the same provider MoviesAPI's embed uses, minus its ad
+    // scripts and popups. Being first makes it the default source, so "Watch
+    // now" plays through our player; when a title has no stream, the usual
+    // "Try next source" banner offers the third-party embeds.
+    name: 'Direct',
+    color: '#7B2FFF',
+    own: true,
+    getUrl: (id, type, s, e) =>
+      type === 'movie'
+        ? `/embed/movie/${id}`
+        : `/embed/tv/${id}?season=${s ?? 1}&episode=${e ?? 1}`,
+  },
   {
     name: 'MoviesAPI',
     color: '#FF9500',
@@ -225,6 +244,7 @@ export default function MediaDetailPage() {
   const firstLoadAtRef = useRef(0);
   const activeSource = EMBED_SOURCES[activeSourceIndex];
   const cleanActive = cleanMode ?? activeSource.cleanByDefault === true;
+  const isOwnSource = activeSource.own === true;
 
   // Episode browsing rail (separate from the player's own season/episode
   // selects — this is what's visible on the page before you've hit play)
@@ -531,6 +551,9 @@ export default function MediaDetailPage() {
   const getEmbedUrl = useCallback(() => {
     const source = EMBED_SOURCES[activeSourceIndex];
     const url = source.getUrl(mediaId, mediaType, selectedSeason, selectedEpisode);
+    // Our own player page carries no ads, and /api/embed is an HTML-stripping
+    // proxy for third-party pages — never wrap it around our own route.
+    if (source.own) return url;
     return cleanActive ? `/api/embed?url=${encodeURIComponent(url)}` : url;
   }, [mediaId, mediaType, selectedSeason, selectedEpisode, activeSourceIndex, cleanActive]);
 
@@ -1002,36 +1025,40 @@ export default function MediaDetailPage() {
                   {src.name}
                 </button>
               ))}
-              <button
-                onClick={() => {
-                  setCleanMode(!cleanActive);
-                  setIframeLoaded(false);
-                  setIframeKey((k) => k + 1);
-                }}
-                title="Loads the player through our server with ad scripts removed. Turn off if the video won't play."
-                className={`ml-auto px-3.5 py-1.5 rounded-lg font-medium text-xs transition-all cursor-pointer border ${
-                  cleanActive
-                    ? 'bg-violet/20 border-violet/50 text-violet-light'
-                    : 'bg-void-2 border-glass-border text-muted hover:text-foreground'
-                }`}
-              >
-                Clean mode: {cleanActive ? 'On' : 'Off'}
-              </button>
-              <button
-                onClick={() => {
-                  setBlockPopups((v) => !v);
-                  setIframeLoaded(false);
-                  setIframeKey((k) => k + 1);
-                }}
-                title="Blocks popups and redirects from the player. Turn off if the video won't play."
-                className={`px-3.5 py-1.5 rounded-lg font-medium text-xs transition-all cursor-pointer border ${
-                  blockPopups
-                    ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
-                    : 'bg-void-2 border-glass-border text-muted hover:text-foreground'
-                }`}
-              >
-                Popup blocker: {blockPopups ? 'On' : 'Off'}
-              </button>
+              {!isOwnSource && (
+                <>
+                  <button
+                    onClick={() => {
+                      setCleanMode(!cleanActive);
+                      setIframeLoaded(false);
+                      setIframeKey((k) => k + 1);
+                    }}
+                    title="Loads the player through our server with ad scripts removed. Turn off if the video won't play."
+                    className={`ml-auto px-3.5 py-1.5 rounded-lg font-medium text-xs transition-all cursor-pointer border ${
+                      cleanActive
+                        ? 'bg-violet/20 border-violet/50 text-violet-light'
+                        : 'bg-void-2 border-glass-border text-muted hover:text-foreground'
+                    }`}
+                  >
+                    Clean mode: {cleanActive ? 'On' : 'Off'}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setBlockPopups((v) => !v);
+                      setIframeLoaded(false);
+                      setIframeKey((k) => k + 1);
+                    }}
+                    title="Blocks popups and redirects from the player. Turn off if the video won't play."
+                    className={`px-3.5 py-1.5 rounded-lg font-medium text-xs transition-all cursor-pointer border ${
+                      blockPopups
+                        ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                        : 'bg-void-2 border-glass-border text-muted hover:text-foreground'
+                    }`}
+                  >
+                    Popup blocker: {blockPopups ? 'On' : 'Off'}
+                  </button>
+                </>
+              )}
             </div>
 
             {/* Load error banner */}
@@ -1055,7 +1082,7 @@ export default function MediaDetailPage() {
 
             {/* Iframe player container */}
             <div className="w-full rounded-2xl overflow-hidden relative aspect-video bg-black border border-glass-border shadow-[0_8px_40px_rgba(123,47,255,0.15)]">
-              {!iframeLoaded && !loadError && (
+              {!iframeLoaded && !loadError && !isOwnSource && (
                 <div className="absolute inset-0 z-10 flex items-center justify-center bg-void-2">
                   <div className="flex flex-col items-center gap-3">
                     <div className="w-8 h-8 rounded-full border-2 border-t-transparent border-violet animate-spin" />
@@ -1098,31 +1125,41 @@ export default function MediaDetailPage() {
                 </div>
               )}
 
-              <iframe
-                ref={iframeRef}
-                key={`${iframeKey}-${activeSourceIndex}-${selectedSeason}-${selectedEpisode}-${blockPopups}-${cleanActive}-${recoverKey}`}
-                src={getEmbedUrl()}
-                className="w-full h-full"
-                allowFullScreen
-                {...(cleanActive
-                  ? { sandbox: CLEAN_MODE_SANDBOX } // no allow-same-origin: embed code can't touch our origin
-                  : blockPopups && EMBED_SOURCES[activeSourceIndex].sandbox !== false
-                    ? { sandbox: EMBED_SOURCES[activeSourceIndex].sandbox || POPUP_BLOCK_SANDBOX }
+              {isOwnSource ? (
+                <DirectStreamPlayer
+                  mediaType={mediaType}
+                  mediaId={mediaId}
+                  season={selectedSeason}
+                  episode={selectedEpisode}
+                  onError={handleIframeError}
+                />
+              ) : (
+                <iframe
+                  ref={iframeRef}
+                  key={`${iframeKey}-${activeSourceIndex}-${selectedSeason}-${selectedEpisode}-${blockPopups}-${cleanActive}-${recoverKey}`}
+                  src={getEmbedUrl()}
+                  className="w-full h-full"
+                  allowFullScreen
+                  {...(cleanActive
+                    ? { sandbox: CLEAN_MODE_SANDBOX } // no allow-same-origin: embed code can't touch our origin
+                    : blockPopups && EMBED_SOURCES[activeSourceIndex].sandbox !== false
+                      ? { sandbox: EMBED_SOURCES[activeSourceIndex].sandbox || POPUP_BLOCK_SANDBOX }
+                      : {})}
+                  {...(EMBED_SOURCES[activeSourceIndex].allow !== undefined
+                    ? { allow: EMBED_SOURCES[activeSourceIndex].allow }
+                    : { allow: DEFAULT_ALLOW })}
+                  {...(EMBED_SOURCES[activeSourceIndex].referrerPolicy !== undefined
+                    ? { referrerPolicy: EMBED_SOURCES[activeSourceIndex].referrerPolicy }
                     : {})}
-                {...(EMBED_SOURCES[activeSourceIndex].allow !== undefined
-                  ? { allow: EMBED_SOURCES[activeSourceIndex].allow }
-                  : { allow: DEFAULT_ALLOW })}
-                {...(EMBED_SOURCES[activeSourceIndex].referrerPolicy !== undefined
-                  ? { referrerPolicy: EMBED_SOURCES[activeSourceIndex].referrerPolicy }
-                  : {})}
-                style={{ border: 'none', display: 'block', position: 'relative', zIndex: 0 }}
-                title={`${detail.title} - Source ${activeSourceIndex + 1}`}
-                onLoad={handleFrameLoad}
-                onError={handleIframeError}
-              />
+                  style={{ border: 'none', display: 'block', position: 'relative', zIndex: 0 }}
+                  title={`${detail.title} - Source ${activeSourceIndex + 1}`}
+                  onLoad={handleFrameLoad}
+                  onError={handleIframeError}
+                />
+              )}
 
               {/* ── Up Next overlay (TV only, manual) ── */}
-              {nextEp && iframeLoaded && !nextEpDismissed && (
+              {nextEp && (iframeLoaded || isOwnSource) && !nextEpDismissed && (
                 <div className="absolute bottom-4 right-4 z-20 w-[280px] flex items-center gap-3 bg-void-2/85 backdrop-blur-md p-2.5 rounded-xl border border-glass-border shadow-[0_12px_32px_rgba(0,0,0,0.5)]">
                   <div className="relative flex-none w-16 aspect-video rounded-md overflow-hidden bg-void-3">
                     {nextEp.ep.stillImg ? (

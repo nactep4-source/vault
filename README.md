@@ -121,3 +121,9 @@ no ad scripts — so it can be iframed from anywhere:
 The page is public (no login) on purpose, since an embed on another site has no
 session here. Its `/api/stream/proxy` links are relative, so the player and the
 proxy share one origin — no CORS, no `base=` needed.
+
+The app's own media pages use that same player: the **Direct** source tab on
+`/media/movie/<id>` and `/media/tv/<id>` is the first tab, so "Watch now" plays
+through our own player by default instead of a third-party embed. That tab has no
+"Clean mode"/"Popup blocker" toggles — there is nothing to strip or block — and if
+a title has no stream, "Try next source" moves on to the embeds.

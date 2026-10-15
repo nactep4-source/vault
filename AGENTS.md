@@ -96,6 +96,18 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3000/login   # 200
     three, a session-less embed gets redirected to `/login` and disappears inside the iframe. No `base=`
     needed — the player and `/api/stream/proxy` share an origin. Verified in the preview: `/embed/movie/1148365`
     resolves, attaches and plays without a session.
+  - **The player is `src/components/DirectStreamPlayer.tsx`**, shared by that route and by the media page's
+    `Direct` source tab (first entry in `EMBED_SOURCES`, so "Watch now" plays it by default). `own: true`
+    on that entry makes the media page mount the component instead of an iframe, hides the "Clean
+    mode"/"Popup blocker" toggles (they only mean something for a third-party embed), and keeps
+    `/api/embed` — an HTML-stripping proxy for other people's pages — off our own route. A failed
+    resolve/playback calls `onError`, so the existing "Try next source" banner offers the embeds.
+    Verified in the preview on `/media/movie/1148365`: Direct active, `readyState 4`, playing and
+    advancing, 150 s buffered, no iframe rendered, both toggles hidden, no console errors; switching to
+    `MoviesAPI` still renders its embed with both toggles back. The TV page's own path through this
+    player was not automatically verified (the preview navigate helper did not switch routes in that
+    session), but the TV resolve it depends on is: `?tmdb_id=1399&type=tv&season=1&episode=1` returns
+    `success: true` for "Game of Thrones" and its proxy playlist answers 200.
   - **Don't size a full-bleed route with `fixed inset-0`.** Every route is wrapped in `.page-enter`
     (`src/app/template.tsx`), whose animation leaves a `transform` on that wrapper
     (`animation-fill-mode: forwards`), and a transformed ancestor becomes the containing block for
