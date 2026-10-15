@@ -81,6 +81,13 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3000/login   # 200
   route also returns the same link through `/api/stream/proxy`, which re-sends that referer and rewrites
   playlist lines. Links are time-limited (~12 h). Verified: resolves + plays through the proxy for a movie
   and for a TV episode.
+  - **`/api/stream/proxy` streams media instead of buffering it.** It reads one chunk to tell a playlist
+    from media by the `#EXTM3U` signature (necessary: that CDN hides extensions behind base64 paths like
+    `…/cdn/<base64>.js`), buffers playlists for rewriting, and passes segments/keys through byte-for-byte.
+    Buffering every ~1 MB segment delayed playback and made a slow shard abort the upstream fetch at the
+    old 15 s timeout (`TimeoutError: The operation was aborted due to timeout` in the web logs); the
+    upstream budget is now 30 s. Verified: proxied segment is md5-identical to the CDN's own bytes,
+    playlists still rewrite, and playback through an embed iframe advances with no proxy errors logged.
   - **Ready-made player page: `/embed/[type]/[id]`** (`?season=&episode=` for TV) — a chrome-free page
     that calls `/api/stream/direct` itself and plays `stream.proxy` with the bundled `hls.js`, so this app
     can be iframed from anywhere instead of a third-party player. It is **deliberately public**: it is

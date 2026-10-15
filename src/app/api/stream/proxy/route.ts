@@ -61,7 +61,12 @@ export async function GET(request: Request) {
         Accept: '*/*',
         'Accept-Language': 'en-US,en;q=0.9',
       },
-      signal: AbortSignal.timeout(15000),
+      // The media host rotates and occasionally answers slowly; 15 s was tight
+      // enough that a late segment aborted mid-download ("TimeoutError: The
+      // operation was aborted due to timeout") and broke playback. Segments are
+      // streamed below, so this only bounds the whole transfer, not the
+      // time-to-first-byte.
+      signal: AbortSignal.timeout(30000),
     });
 
     if (!res.ok) {
@@ -69,16 +74,36 @@ export async function GET(request: Request) {
     }
 
     const contentType = res.headers.get('content-type') ?? 'application/octet-stream';
-    const buffer = await res.arrayBuffer();
+
+    // Playlist or media has to be decided from the body: the CDN hides media
+    // extensions behind base64 paths (`…/cdn/<base64>.js`, `…/file2/<base64>==`),
+    // so neither the URL nor the content type is reliable. Read the first chunk
+    // to check the `#EXTM3U` signature, then either buffer the (small) playlist
+    // or stream the segment straight through — buffering every ~1 MB segment
+    // here delayed playback and was what hit the timeout above.
+    const reader = res.body?.getReader();
+    let head = new Uint8Array(0);
+    if (reader) {
+      const first = await reader.read();
+      head = first.value ?? new Uint8Array(0);
+    }
 
     const isPlaylist =
       contentType.includes('mpegurl') ||
       contentType.includes('x-mpegurl') ||
       /\.m3u8(\?|$)/.test(url) ||
-      new TextDecoder().decode(buffer.slice(0, 7)) === '#EXTM3U';
+      new TextDecoder().decode(head.slice(0, 7)) === '#EXTM3U';
 
     if (isPlaylist) {
-      let text = new TextDecoder().decode(buffer);
+      const chunks: Uint8Array[] = head.length ? [head] : [];
+      if (reader) {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) chunks.push(value);
+        }
+      }
+      let text = new TextDecoder().decode(Buffer.concat(chunks));
       const baseUrl = url.substring(0, url.lastIndexOf('/') + 1);
       const toProxy = (target: string) =>
         `/api/stream/proxy?url=${encodeURIComponent(target)}&referer=${encodeURIComponent(
@@ -104,7 +129,34 @@ export async function GET(request: Request) {
       });
     }
 
-    return new NextResponse(buffer, {
+    // Media (segments, keys): pass the bytes through as they arrive, starting
+    // with the chunk already read for the signature check.
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        if (head.length) controller.enqueue(head);
+        if (!reader) {
+          controller.close();
+          return;
+        }
+        void (async () => {
+          try {
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              if (value) controller.enqueue(value);
+            }
+            controller.close();
+          } catch (err) {
+            controller.error(err);
+          }
+        })();
+      },
+      cancel() {
+        void reader?.cancel().catch(() => {});
+      },
+    });
+
+    return new NextResponse(stream, {
       status: 200,
       headers: {
         'Content-Type': contentType,
