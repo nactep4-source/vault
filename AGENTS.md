@@ -81,13 +81,39 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3000/login   # 200
   route also returns the same link through `/api/stream/proxy`, which re-sends that referer and rewrites
   playlist lines. Links are time-limited (~12 h). Verified: resolves + plays through the proxy for a movie
   and for a TV episode.
+  - **There are two sources, and `server=1|2` pins one.** Server 1 (default) is moviesapi.to; server 2 is
+    vidsrc.pm, the same player API with its own key (`/assets/main-*.js` in that site's bundle), for titles
+    server 1 does not carry. Without `server`, server 1 is tried first and server 2 is the fallback, and the
+    response says which one answered (`server`, `provider`, `referer`). Server 2's media URLs are wrapped in
+    its own front (`p1.hd4u.sbs/proxy?url=…`, `…/segment?url=…`) that intermittently answers 503 while the
+    CDN behind it is healthy, so the proxy unwraps `hd4u.sbs` to the `url=` it carries. The media page
+    exposes both as its "Direct" and "Server 2" tabs (both `own: true`, i.e. our player, `server=2` on the
+    embed URL for the second). **Server 2 playback could NOT be verified on 2026-10-15**: every call to
+    `vidsrc.pm/api/vidora/v1/...` answered `502` (its plain site pages still answered 200), so
+    `/api/stream/direct` says "Could not reach the source" for titles only server 2 carries — e.g. TV 65733
+    ("No stream available for this title" when `server=1` is forced).
+  - **Upstream refusals that are NOT our code (state as of 2026-10-15).** Shards rotate per resolve, and
+    most were unhealthy while testing: `bx.netrocdn.site` served `.m3u8` but redirected **every media
+    request** (`/file2/<base64>`) to `https://www.cloudflare-terms-of-service-abuse.com/stream.mp4` (a
+    Cloudflare abuse-mitigation page, so no video bytes at all), and throttled playlists to ~3.5 KB/s;
+    `north-man.kurututujohn.workers.dev` answered empty; `p1.hd4u.sbs` (server 2's CDN) returned nothing.
+    Playback of titles on those shards fails regardless of the proxy — re-test a title before treating a
+    playback failure as ours.
   - **`/api/stream/proxy` streams media instead of buffering it.** It reads one chunk to tell a playlist
     from media by the `#EXTM3U` signature (necessary: that CDN hides extensions behind base64 paths like
     `…/cdn/<base64>.js`), buffers playlists for rewriting, and passes segments/keys through byte-for-byte.
-    Buffering every ~1 MB segment delayed playback and made a slow shard abort the upstream fetch at the
-    old 15 s timeout (`TimeoutError: The operation was aborted due to timeout` in the web logs); the
-    upstream budget is now 30 s. Verified: proxied segment is md5-identical to the CDN's own bytes,
-    playlists still rewrite, and playback through an embed iframe advances with no proxy errors logged.
+    **Its upstream budget is split in two** — `FIRST_BYTE_TIMEOUT_MS` (20 s) bounds the wait for response
+    headers, `IDLE_TIMEOUT_MS` (60 s) bounds silence *between* body chunks (`readChunk`). One end-to-end
+    timeout is wrong for this CDN: measured on `bx.netrocdn.site`, headers arrived after 3.3 s and a 178 KB
+    VOD playlist then drained over ~48 s with silences of 12 s and 33 s in the middle, so any whole-transfer
+    budget killed working playlists (`TimeoutError: The operation was aborted due to timeout` in the web
+    logs, 502 to the player). An aborted fetch also used to log its whole DOMException error-code table —
+    the catch now logs the message and URL only. Verified after the change: that same slow playlist returns
+    200 with `#EXT-X-ENDLIST` (48 s, nothing logged); master + variant playlists still rewrite to
+    `/api/stream/proxy` links; and a 1.9 MB segment proxied from a public HLS test stream
+    (`test-streams.mux.dev/x36xhzz/x36xhzz.m3u8`) is **byte-identical (md5) to the origin's own bytes**.
+    Note a playlist that slow also outlasts hls.js's default manifest timeout (~10 s), so the viewer can
+    still fail client-side on such a shard even when the proxy succeeds.
   - **Ready-made player page: `/embed/[type]/[id]`** (`?season=&episode=` for TV) — a chrome-free page
     that calls `/api/stream/direct` itself and plays `stream.proxy` with the bundled `hls.js`, so this app
     can be iframed from anywhere instead of a third-party player. It is **deliberately public**: it is

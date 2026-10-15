@@ -94,6 +94,31 @@ which a browser on another origin will not send. The proxy adds that referer
 server-side and rewrites the playlist so its segments keep working through it.
 `stream.url` plus `referer` is for server-side use only.
 
+### Two sources
+
+The stream comes from one of two independent providers, both speaking the same
+player API:
+
+| `server` | Provider | Referer it needs |
+| --- | --- | --- |
+| `1` (default) | moviesapi.to | `https://moviesapi.to/` |
+| `2` | vidsrc.pm | `https://vidsrc.pm/` |
+
+Their catalogues differ, which is the point: without `server` the route tries `1`
+first and uses `2` for titles `1` does not carry, so the default response already
+covers both. Pass `server=2` to pin the second one:
+
+```text
+/api/stream/direct?tmdb_id=550&type=movie&server=2
+```
+
+The response reports which provider answered (`server`, `provider`) and the
+`referer` to hand to `/api/stream/proxy`, so a player picks up the right one
+automatically. The app's media pages expose the same choice as their "Server 2"
+tab. Either provider can be temporarily unreachable — the route then answers
+`success: false` with `"Could not reach the source."`, which is the title to show
+the viewer, not a bug in the player.
+
 The response allows cross-origin reads (`Access-Control-Allow-Origin: *`), and
 links are time-limited — resolve them per playback, don't store them.
 

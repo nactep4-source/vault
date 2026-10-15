@@ -1,5 +1,12 @@
 import { NextResponse } from 'next/server';
 
+// Upstream budgets — see the fetch below for why they are split this way.
+// Measured on `bx.netrocdn.site`: headers after 3.3 s, body then arrives over
+// ~48 s with silences of 12 s and 33 s in the middle, so the idle budget has to
+// clear that stall or a working playlist gets cut off.
+const FIRST_BYTE_TIMEOUT_MS = 20000;
+const IDLE_TIMEOUT_MS = 60000;
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const url = searchParams.get('url');
@@ -74,6 +81,19 @@ export async function GET(request: Request) {
     /* the outer URL was already validated above */
   }
 
+  // The CDN drip-feeds its responses: headers usually land within a second, but
+  // the body can crawl — a large VOD playlist (150–350 KB) has taken ~45 s to
+  // drain here, and shards that are throttled go slower still. A whole-transfer
+  // timeout therefore aborted perfectly good downloads ("TimeoutError: The
+  // operation was aborted due to timeout", 502 to the player). Bound the time
+  // to *first byte* instead, and let `readChunk` below cut loose an upstream
+  // that genuinely stops sending mid-body.
+  const abortController = new AbortController();
+  const firstByteTimer = setTimeout(
+    () => abortController.abort(new Error('upstream timed out before first byte')),
+    FIRST_BYTE_TIMEOUT_MS
+  );
+
   try {
     const res = await fetch(fetchUrl, {
       headers: {
@@ -84,13 +104,8 @@ export async function GET(request: Request) {
         Accept: '*/*',
         'Accept-Language': 'en-US,en;q=0.9',
       },
-      // The media host rotates and occasionally answers slowly; 15 s was tight
-      // enough that a late segment aborted mid-download ("TimeoutError: The
-      // operation was aborted due to timeout") and broke playback. Segments are
-      // streamed below, so this only bounds the whole transfer, not the
-      // time-to-first-byte.
-      signal: AbortSignal.timeout(30000),
-    });
+      signal: abortController.signal,
+    }).finally(() => clearTimeout(firstByteTimer));
 
     if (!res.ok) {
       return new NextResponse(`Upstream error: ${res.status}`, { status: res.status });
@@ -105,9 +120,32 @@ export async function GET(request: Request) {
     // or stream the segment straight through — buffering every ~1 MB segment
     // here delayed playback and was what hit the timeout above.
     const reader = res.body?.getReader();
-    let head = new Uint8Array(0);
+
+    // Reads the next chunk, giving up only when the upstream stays silent for
+    // IDLE_TIMEOUT_MS: a slow-but-progressing body is fine, a stalled one is
+    // not — and aborting also tears down the upstream request behind `source`.
+    const readChunk = async (
+      source: ReadableStreamDefaultReader<Uint8Array>
+    ): Promise<ReadableStreamReadResult<Uint8Array>> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          source.read(),
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => {
+              abortController.abort(new Error('upstream stalled mid-body'));
+              reject(new Error('upstream stalled mid-body'));
+            }, IDLE_TIMEOUT_MS);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+
+    let head: Uint8Array = new Uint8Array(0);
     if (reader) {
-      const first = await reader.read();
+      const first = await readChunk(reader);
       head = first.value ?? new Uint8Array(0);
     }
 
@@ -121,7 +159,7 @@ export async function GET(request: Request) {
       const chunks: Uint8Array[] = head.length ? [head] : [];
       if (reader) {
         for (;;) {
-          const { done, value } = await reader.read();
+          const { done, value } = await readChunk(reader);
           if (done) break;
           if (value) chunks.push(value);
         }
@@ -172,7 +210,7 @@ export async function GET(request: Request) {
         void (async () => {
           try {
             for (;;) {
-              const { done, value } = await reader.read();
+              const { done, value } = await readChunk(reader);
               if (done) break;
               if (value) controller.enqueue(value);
             }
@@ -196,7 +234,13 @@ export async function GET(request: Request) {
       },
     });
   } catch (err) {
-    console.error('[Stream Proxy] Error:', err);
+    // An aborted fetch rejects with a DOMException whose printed form is a huge
+    // table of error-code constants (it filled the logs); the message is enough.
+    console.error(
+      '[Stream Proxy] Error:',
+      err instanceof Error ? err.message : String(err),
+      fetchUrl
+    );
     return new NextResponse('Proxy error', { status: 502 });
   }
 }
