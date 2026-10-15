@@ -1,0 +1,32 @@
+{
+  "previewPort": 3000,
+  "healthPath": "/login",
+  "startCommand": "docker compose -f docker-compose.base44.yml up -d --build",
+  "secrets": [
+    {
+      "name": "NEXT_PUBLIC_SUPABASE_URL",
+      "description": "Optional. Supabase project URL. Without it the app uses its built-in local-storage fallback instead of a real project.",
+      "requiredAtBoot": false
+    },
+    {
+      "name": "NEXT_PUBLIC_SUPABASE_ANON_KEY",
+      "description": "Optional. Supabase anon / publishable key for the project above.",
+      "requiredAtBoot": false
+    },
+    {
+      "name": "SUPABASE_SERVICE_ROLE_KEY",
+      "description": "Optional. Supabase service-role key, used by the Streamtape mapping endpoints.",
+      "requiredAtBoot": false
+    },
+    {
+      "name": "STREAMTAPE_LOGIN",
+      "description": "Optional. Streamtape API login (streamtape.com account settings) for the download endpoints.",
+      "requiredAtBoot": false
+    },
+    {
+      "name": "STREAMTAPE_KEY",
+      "description": "Optional. Streamtape API key for the download endpoints.",
+      "requiredAtBoot": false
+    }
+  ]
+}

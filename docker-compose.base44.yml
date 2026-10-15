@@ -1,0 +1,60 @@
+# Base44 dev environment for the Stream Next.js app.
+#
+# Runs the app straight from the cloned source with a live-reload dev server
+# (no prebuilt app image, no production build), so every edit shows up in the
+# preview. Dependencies are installed from package-lock.json at container
+# startup into a named volume, so the working tree stays clean and restarts
+# stay fast.
+#
+# Usage: docker compose -f docker-compose.base44.yml up -d --build
+# Web entry point: http://localhost:3000  (preview proxy maps host port 3000)
+
+services:
+  web:
+    image: node:22
+    working_dir: /app
+    ports:
+      - "3000:3000"
+    environment:
+      # Passed through by the platform; next.config.mjs only relaxes dev-time
+      # host/origin allowlists when this is exactly "1".
+      - BASE44_PREVIEW_MODE
+      - BASE44_PUBLIC_HOST_SUFFIX
+      - BASE44_SANDBOX_HOST_DOMAIN
+      - NEXT_TELEMETRY_DISABLED=1
+      # Bind mounts are watched by polling so hot reload is reliable here.
+      - WATCHPACK_POLLING=true
+      - CHOKIDAR_USEPOLLING=true
+    env_file:
+      # Optional external credentials (Supabase project, Streamtape API).
+      # The app boots and runs without them: supabase clients fall back to the
+      # app's built-in local-storage mock, and only the Streamtape download
+      # feature needs its own keys.
+      - /run/base44/app.env
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+    command:
+      - sh
+      - -ec
+      - |
+        STAMP=node_modules/.base44-lock
+        LOCK=$$(md5sum package-lock.json | cut -d' ' -f1)
+        if [ ! -x node_modules/.bin/next ] || [ "$$(cat $$STAMP 2>/dev/null)" != "$$LOCK" ]; then
+          echo "[base44] installing dependencies from package-lock.json (npm ci)"
+          CI=true npm ci --no-audit --no-fund
+          echo "$$LOCK" > $$STAMP
+        fi
+        exec npm run dev
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - node -e "fetch('http://127.0.0.1:3000/login').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 10s
+      start_period: 240s
+      retries: 5
+    restart: on-failure
+
+volumes:
+  node_modules:
