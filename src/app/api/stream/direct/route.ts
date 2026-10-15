@@ -167,15 +167,20 @@ export async function GET(request: Request) {
   }
 
   if (!chosen) {
+    // Always answer 404, never a 5xx. A 5xx from this route is swallowed by the
+    // preview's own proxy, which substitutes its "Preview starting…" placeholder
+    // page for it — the player's `res.json()` then throws on that HTML and
+    // reports a bogus network failure ("Could not reach the stream service.")
+    // instead of the real reason. `reason` still separates a title nobody
+    // carries from a source that failed, for callers that care.
+    const unreachable = lastStatus !== 404;
     return NextResponse.json(
       {
         success: false,
-        error:
-          lastStatus === 404
-            ? 'No stream available for this title.'
-            : 'Could not reach the source.',
+        reason: unreachable ? 'upstream-error' : 'unavailable',
+        error: unreachable ? 'Could not reach the source.' : 'No stream available for this title.',
       },
-      { status: lastStatus === 404 ? 404 : 502, headers: CORS_HEADERS }
+      { status: 404, headers: CORS_HEADERS }
     );
   }
 

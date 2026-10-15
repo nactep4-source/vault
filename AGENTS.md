@@ -92,8 +92,21 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3000/login   # 200
     `vidsrc.pm/api/vidora/v1/...` answered `502` while its plain site pages still answered 200. It recovered
     later that day: `server=2` resolves "Fight Club" (provider `scrapify`) and its proxy playlist (284 KB)
     plus a 442 KB segment both answer 200, and it carries series server 1 does not (94605, 82856, 94997,
-    71446, 63174, …). Titles in *neither* catalogue still fail with "Could not reach the source." — TV 1402
-    (server 1: `404 "No Vidora link found for this episode"`, server 2: `502`) and TV 65733 / 76479.
+    71446, 63174, …). Titles in *neither* catalogue still fail with "Could not reach the source." — TV 65733
+    and 76479; **TV 1402 (The Walking Dead) is only *partly* carried**: moviesapi has no episode link for it
+    at all (`404 "No Vidora link found for this episode"`, view_id 21748) and vidsrc.pm's backend answers
+    `502 "error code: 502"` for its early seasons, but season 11 resolves (`tv/1402/11/24` → 200). So the
+    show plays on the *Server 2* tab for the episodes that backend still serves and nowhere in the vidora
+    family for the others — moviesapi.to's own site fails S1E1 the same way, so it is the upstream
+    catalogue, not our code.
+  - **Never answer a 5xx from `/api/stream/direct` (or any route a browser parses as JSON) — the preview
+    proxy swaps 5xx responses for its own page.** The route used to return `502` when no source produced a
+    stream; through the preview that comes back as the platform's "Preview starting…" placeholder **HTML**,
+    so `DirectStreamPlayer`'s `res.json()` threw and it showed "Could not reach the stream service." — a
+    false network error that hid the real reason (the exact 2026-10-15 "The Walking Dead won't play"
+    report). Verified by `curl` against `https://3000-$BASE44_PUBLIC_HOST_SUFFIX/api/stream/direct…`: 200,
+    400 and 404 pass through untouched, 502 does not. Both failure modes now answer
+    `404 {"success":false,"reason":"unavailable"|"upstream-error","error":…}`.
   - **Upstream refusals that are NOT our code (state as of 2026-10-15).** Shards rotate per resolve, and
     most were unhealthy while testing: `bx.netrocdn.site` served `.m3u8` but redirected **every media
     request** (`/file2/<base64>`) to `https://www.cloudflare-terms-of-service-abuse.com/stream.mp4` (a

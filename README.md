@@ -115,9 +115,12 @@ covers both. Pass `server=2` to pin the second one:
 The response reports which provider answered (`server`, `provider`) and the
 `referer` to hand to `/api/stream/proxy`, so a player picks up the right one
 automatically. The app's media pages expose the same choice as their "Server 2"
-tab. Either provider can be temporarily unreachable — the route then answers
-`success: false` with `"Could not reach the source."`, which is the title to show
-the viewer, not a bug in the player.
+tab. When neither source can play a title the route answers HTTP `404` with
+`success: false`, an `error` string to show the viewer and a `reason` of
+`"unavailable"` (no source carries the title) or `"upstream-error"` (a source
+failed). It never answers a 5xx — intermediaries commonly replace those with an
+error page of their own, which would hide the reason. A "no stream" answer is the
+message to display, not a bug in the player.
 
 The response allows cross-origin reads (`Access-Control-Allow-Origin: *`), and
 links are time-limited — resolve them per playback, don't store them.
