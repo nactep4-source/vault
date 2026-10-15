@@ -33,6 +33,15 @@ export async function getStreamtapeFileInfo(fileIds: string[]) {
   return data.result as Record<string, StreamtapeFileInfo>;
 }
 
+/**
+ * True when the optional Supabase service-role integration is configured.
+ * The Streamtape mapping endpoints report a 503 instead of throwing when it
+ * is not, since the rest of the app works without Supabase credentials.
+ */
+export function isServiceClientConfigured() {
+  return Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
+}
+
 export function createServiceClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;

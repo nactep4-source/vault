@@ -2,8 +2,11 @@ import { NextResponse } from 'next/server';
 import {
   createServiceClient,
   getStreamtapeFileInfo,
+  isServiceClientConfigured,
   isStreamtapeAdmin,
 } from '@/lib/server/streamtape';
+
+const NOT_CONFIGURED = 'Supabase service role is not configured.';
 
 function errorResponse(error: string, status: number) {
   return NextResponse.json({ success: false, error }, { status });
@@ -18,6 +21,10 @@ export async function GET(request: Request) {
 
   if (!tmdbId || !['movie', 'tv'].includes(mediaType || '')) {
     return errorResponse('Required: tmdb_id and type (movie|tv).', 400);
+  }
+  if (!isServiceClientConfigured()) {
+    console.error('[Streamtape mappings] Supabase service role is not configured; skipping lookup.');
+    return errorResponse(NOT_CONFIGURED, 503);
   }
 
   try {
@@ -41,6 +48,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   if (!isStreamtapeAdmin(request)) return errorResponse('Unauthorized.', 401);
+  if (!isServiceClientConfigured()) return errorResponse(NOT_CONFIGURED, 503);
 
   let body: {
     tmdb_id?: string;

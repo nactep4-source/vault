@@ -41,6 +41,12 @@ They are truly optional — the app boots and renders without them:
 If you set real Supabase credentials, an admin token (`STREAMTAPE_ADMIN_TOKEN`) is required
 before `/api/streamtape/mappings` accepts writes.
 
+While they are unset, `/api/streamtape/mappings` answers `503` with
+`{"success":false,"error":"Supabase service role is not configured."}` (and `/api/streamtape/download`
+answers `503` too) instead of failing with a 500 plus a stack trace — the media pages render a
+disabled download button in that state. The client only enables the download button when the app is
+wired to a Supabase project that has the `streamtape_files` table (`supabase/migrations/20260930120000_*.sql`).
+
 ## How to verify it works
 
 1. `curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3000/login` → `200`.
