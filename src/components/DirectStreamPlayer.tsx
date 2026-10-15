@@ -70,6 +70,9 @@ export type DirectStreamInfo = {
 type DirectStreamResponse = {
   success: boolean;
   error?: string;
+  // Why the resolve failed: 'unavailable' = no source carries this title,
+  // 'upstream-error' = a source did not answer. Only the second is retryable.
+  reason?: 'unavailable' | 'upstream-error';
   title?: string | null;
   stream?: DirectStreamInfo;
 };
@@ -102,6 +105,14 @@ export default function DirectStreamPlayer({
   const [stream, setStream] = useState<DirectStreamInfo | null>(null);
   const [title, setTitle] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Two failures read very differently to a viewer, and only one is worth
+  // acting on: a source that did not answer usually works on a second try,
+  // while a title no source carries fails identically however often you ask.
+  // On the media page the "Try next source" banner is the way out of the
+  // second; here the retry button covers the first.
+  const [retryable, setRetryable] = useState(false);
+  // Bumped by the retry button to run the resolve below again.
+  const [attempt, setAttempt] = useState(0);
 
   // 1. Resolve the playable link for this title.
   useEffect(() => {
@@ -113,6 +124,7 @@ export default function DirectStreamPlayer({
     let cancelled = false;
     setStream(null);
     setError(null);
+    setRetryable(false);
 
     const query = new URLSearchParams({ tmdb_id: mediaId, type: mediaType });
     if (mediaType === 'tv') {
@@ -127,19 +139,22 @@ export default function DirectStreamPlayer({
         if (cancelled) return;
         if (!body.success || !body.stream) {
           setError(body.error || 'No stream available for this title.');
+          setRetryable(body.reason !== 'unavailable');
           return;
         }
         setTitle(body.title ?? null);
         setStream(body.stream);
       })
       .catch(() => {
-        if (!cancelled) setError('Could not reach the stream service.');
+        if (cancelled) return;
+        setError('Could not reach the stream service.');
+        setRetryable(true);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [mediaId, mediaType, season, episode, server]);
+  }, [mediaId, mediaType, season, episode, server, attempt]);
 
   // 2. Play it. hls.js where supported, native HLS (Safari) otherwise.
   useEffect(() => {
@@ -152,7 +167,11 @@ export default function DirectStreamPlayer({
       hls.attachMedia(video);
       hls.on(Hls.Events.ERROR, (_event, data) => {
         if (data.fatal) {
+          // Usually a stream link that has aged out (they are time-limited) or
+          // a shard that stopped serving, so re-resolving is a real fix —
+          // hence the retry rather than a dead end.
           setError('Playback failed — this title may no longer be available.');
+          setRetryable(true);
         }
       });
       return () => hls.destroy();
@@ -194,6 +213,15 @@ export default function DirectStreamPlayer({
             {title ?? 'Playback unavailable'}
           </p>
           <p className="text-xs text-muted max-w-sm">{error}</p>
+          {retryable && (
+            <button
+              type="button"
+              onClick={() => setAttempt((n) => n + 1)}
+              className="mt-1.5 px-4 py-1.5 rounded-full bg-void-3 hover:bg-zinc-800 border border-glass-border text-foreground text-xs font-medium transition-colors cursor-pointer"
+            >
+              Try again
+            </button>
+          )}
         </div>
       )}
     </div>

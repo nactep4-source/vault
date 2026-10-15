@@ -159,9 +159,18 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3000/login   # 200
     tolerance, so a throttled shard made playback fail client-side ("Playback failed — this title may no
     longer be available") *after* the proxy had delivered the playlist correctly — the "series don't play"
     report. Series playlists are the big ones (15.6 s measured vs 0.7 s for another series and 81 s for a
-    movie, same day), which is why it looked like a series-only bug. `/api/stream/direct` also says
-    "Could not reach the source." for titles in neither catalogue (TV 1402/65733/76479), which is a separate,
-    upstream limit — "Try next source" is the way out for those.
+    movie, same day), which is why it looked like a series-only bug. Titles no source carries fail here too
+    (TV 65733/76479 answer "Could not reach the source."), which is a separate, upstream limit — "Try next
+    source" is the way out for those.
+  - **The player's failure state distinguishes the two `reason`s (2026-10-15).** `DirectStreamPlayer` reads
+    `reason` from `/api/stream/direct`: `upstream-error` gets a **Try again** button that re-runs the resolve
+    (the actual fix when a shard rotated or a provider came back), `unavailable` does not — a title no source
+    carries fails identically however often you ask. Both still call `onError`, so the media page's "Try next
+    source" banner offers the third-party tabs. Note that most "cannot play" answers are `upstream-error`,
+    not `unavailable`: vidsrc.pm returns `502 "error code: 502"` for **any** id its backend cannot serve
+    (a bogus id like `99999999` included), so `unavailable` requires *both* sources to answer `404` — e.g.
+    `?…&server=1` for a title moviesapi itself does not have. The retry is harmless either way: it resolves
+    the title again and lands back on the same message.
   - **Don't size a full-bleed route with `fixed inset-0`.** Every route is wrapped in `.page-enter`
     (`src/app/template.tsx`), whose animation leaves a `transform` on that wrapper
     (`animation-fill-mode: forwards`), and a transformed ancestor becomes the containing block for

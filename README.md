@@ -156,6 +156,12 @@ through our own player by default instead of a third-party embed. That tab has n
 "Clean mode"/"Popup blocker" toggles — there is nothing to strip or block — and if
 a title has no stream, "Try next source" moves on to the embeds.
 
+When the player cannot play a title it says why, and only offers **Try again**
+when trying again can help: a source that failed (or a stream link that has aged
+out — they are time-limited) is worth a second resolve, while a title the sources
+do not carry is not, and there "Try next source" is the way on. This player plays
+what those sources hold, not the whole TMDB catalogue.
+
 Because `/api/stream/proxy` can only answer a playlist once it has drained it from
 the CDN, its first byte is the whole drain, and these shards drip-feed: measured
 through it, a series variant playlist took 15.6 s and a movie's reached 81 s on a
