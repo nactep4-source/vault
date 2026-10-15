@@ -1,55 +1,22 @@
 import { NextResponse } from 'next/server';
+import {
+  guardScript,
+  isAllowedHost,
+  proxyNestedFrames,
+  stripAdScripts,
+} from '@/lib/server/embedSanitizer';
 
 // "Clean mode" embed proxy.
-// Fetches an embed page server-side, strips known ad scripts, injects a guard
-// script (blocks window.open, cross-site link clicks and — in browsers that
-// support the Navigation API — script-driven redirects), then serves it.
+// Fetches an embed page server-side, strips ad scripts, injects the popup /
+// redirect guard, then serves it. It also routes the embed's own player frame
+// back through this proxy (proxyNestedFrames): VidCore.org serves a thin
+// wrapper that loads its real player page from a rotating player/CDN host, and
+// the ad payload lives in *that* page, so sanitizing the wrapper alone is not
+// enough.
 //
 // SECURITY: the response is served with a CSP `sandbox` header WITHOUT
 // allow-same-origin, so third-party code runs in an opaque origin and can
 // never touch this site's cookies / localStorage / Supabase session.
-
-const ALLOWED_HOSTS = ['moviesapi.to', 'vidcore.org', 'vidcore.net', 'vidsrc.sh'];
-
-const AD_HOSTS = [
-  'exoclick.com', 'exosrv.com', 'trafficjunky.net', 'adnxs.com',
-  'doubleclick.net', 'googlesyndication.com', 'popads.net', 'popcash.net',
-  'propellerads.com', 'hilltopads.net', 'adsterra.com', 'juicyads.com',
-  'plugrush.com', 'revcontent.com', 'outbrain.com', 'taboola.com', 'mgid.com',
-  'zedo.com', 'clickadu.com', 'adcash.com', 'adskeeper.co.uk',
-  'bidvertiser.com', 'yllix.com', 'popunder.net', 'pop.cash',
-  'popuptraffic.com', 'clkmon.com', 'clkrev.com', 'go2speed.org',
-];
-
-function isAllowedHost(host: string) {
-  host = host.toLowerCase();
-  return ALLOWED_HOSTS.some((d) => host === d || host.endsWith('.' + d));
-}
-
-function guardScript(allowedOrigin: string) {
-  return `<script>(function(){
-var ALLOWED=${JSON.stringify(allowedOrigin)};
-try{window.open=function(){return null;};}catch(e){}
-document.addEventListener('click',function(e){
-  var a=e.target&&e.target.closest&&e.target.closest('a[href]');
-  if(!a)return;
-  try{var u=new URL(a.href,location.href);
-    if(u.origin!==ALLOWED&&(a.target==='_blank'||a.target==='_top'||a.target==='_parent')){
-      e.preventDefault();e.stopImmediatePropagation();}
-  }catch(_){
-  }
-},true);
-try{if(window.navigation&&navigation.addEventListener){
-  navigation.addEventListener('navigate',function(e){
-    try{var u=new URL(e.destination.url);
-      if(e.cancelable&&u.origin!==ALLOWED&&u.protocol.indexOf('http')===0&&u.origin!==location.origin){e.preventDefault();}
-    }catch(_){
-    }
-  });
-}}catch(_){
-}
-})();</script>`;
-}
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -99,12 +66,8 @@ export async function GET(request: Request) {
 
     let html = await upstream.text();
 
-    // Strip external ad scripts.
-    const adPattern = AD_HOSTS.map((h) => h.replace(/\./g, '\\.')).join('|');
-    html = html.replace(
-      new RegExp(`<script\\b[^>]*\\bsrc=["'][^"']*(?:${adPattern})[^"']*["'][^>]*>\\s*</script>`, 'gi'),
-      ''
-    );
+    html = stripAdScripts(html, parsed.hostname.toLowerCase());
+    html = proxyNestedFrames(html);
 
     // <base> so relative assets still load from the embed's origin, plus guard.
     const inject = `<base href="${parsed.origin}/">` + guardScript(parsed.origin);

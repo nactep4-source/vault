@@ -60,3 +60,9 @@ wired to a Supabase project that has the `streamtape_files` table (`supabase/mig
   host/origin overrides were needed for the preview proxy. `next.config.mjs` is untouched.
 - `next dev` writes to `.next-dev` (gitignored); a production build would use `.next`.
 - `tsconfig.tsbuildinfo` and two `*.zip` archives sit in the repo root — harmless leftovers.
+- The **VidCore** player source always loads through `/api/embed` (its own player page opens a
+  casino popup on every click and redirects the frame to an ad page). The sanitizing rules live in
+  `src/lib/server/embedSanitizer.ts`, and the proxy also re-points VidCore's nested player frame at
+  itself. On `localhost` that upstream host answers with its own "404: NOT_FOUND" page for both the
+  proxied and the direct embed, so VidCore cannot be seen playing in the sandbox — that comes from
+  the third-party host, not from the proxy.

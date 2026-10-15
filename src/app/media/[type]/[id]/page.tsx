@@ -39,6 +39,9 @@ interface EmbedSource {
   // Override the popup-blocking sandbox for a source that refuses to play
   // when sandboxed. `false` = never sandbox this source.
   sandbox?: string | false;
+  // Always load this source through the sanitizing proxy (/api/embed), even
+  // with clean mode off — for a source whose own player page injects ads.
+  sanitize?: boolean;
   getUrl: (tmdbId: string, type: 'movie' | 'tv', season?: number, episode?: number) => string;
 }
 
@@ -59,6 +62,13 @@ const EMBED_SOURCES: EmbedSource[] = [
     name: 'VidCore',
     color: '#A78BFA',
     referrerPolicy: DEFAULT_REFERRER_POLICY,
+    // vidcore.org serves an ad wrapper around its player: the real player page
+    // it loads in a nested frame opens a casino popup on every click and
+    // redirects the frame to an ad page when it thinks DevTools are open
+    // (which misfires whenever the player is small). Neither is reachable from
+    // outside the frame, so this source always goes through /api/embed, which
+    // strips those scripts and proxies the player frame itself.
+    sanitize: true,
     getUrl: (id, type, s, e) => {
       const params = new URLSearchParams({
         theme: '7B2FFF',
@@ -511,7 +521,7 @@ export default function MediaDetailPage() {
   const getEmbedUrl = useCallback(() => {
     const source = EMBED_SOURCES[activeSourceIndex];
     const url = source.getUrl(mediaId, mediaType, selectedSeason, selectedEpisode);
-    return cleanMode ? `/api/embed?url=${encodeURIComponent(url)}` : url;
+    return cleanMode || source.sanitize ? `/api/embed?url=${encodeURIComponent(url)}` : url;
   }, [mediaId, mediaType, selectedSeason, selectedEpisode, activeSourceIndex, cleanMode]);
 
   const handleWatchNow = (seasonOverride?: number, episodeOverride?: number) => {
@@ -1083,7 +1093,7 @@ export default function MediaDetailPage() {
                 src={getEmbedUrl()}
                 className="w-full h-full"
                 allowFullScreen
-                {...(cleanMode
+                {...(cleanMode || EMBED_SOURCES[activeSourceIndex].sanitize
                   ? { sandbox: CLEAN_MODE_SANDBOX } // no allow-same-origin: embed code can't touch our origin
                   : blockPopups && EMBED_SOURCES[activeSourceIndex].sandbox !== false
                     ? { sandbox: EMBED_SOURCES[activeSourceIndex].sandbox || POPUP_BLOCK_SANDBOX }
