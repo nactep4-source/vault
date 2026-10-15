@@ -35,7 +35,9 @@ export function Navigation() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
-  if (pathname === '/login') return null;
+  // `/embed` is the chrome-free player page (see src/app/embed) — no app
+  // navigation inside an embed.
+  if (pathname === '/login' || pathname.startsWith('/embed')) return null;
 
   const isItemActive = (item: NavItem) => {
     if (item.match.type === 'path') return pathname === item.href;

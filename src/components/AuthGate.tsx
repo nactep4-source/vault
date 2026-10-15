@@ -4,7 +4,9 @@ import { useEffect } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 
-const PUBLIC_PATHS = ['/login', '/forgot-password', '/auth/callback'];
+// `/embed` hosts the public direct-stream player — it is meant to be iframed
+// from other sites, so it can never depend on a signed-in session.
+const PUBLIC_PATHS = ['/login', '/forgot-password', '/auth/callback', '/embed'];
 
 function isPublicPath(pathname: string) {
   return PUBLIC_PATHS.some(

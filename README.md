@@ -96,3 +96,28 @@ server-side and rewrites the playlist so its segments keep working through it.
 
 The response allows cross-origin reads (`Access-Control-Allow-Origin: *`), and
 links are time-limited — resolve them per playback, don't store them.
+
+### Ready-made player (iframe)
+
+If you'd rather not write a player, this app serves one:
+
+```text
+/embed/movie/550
+/embed/tv/1399?season=1&episode=1
+```
+
+It resolves the stream itself and plays it with hls.js — no third-party embed,
+no ad scripts — so it can be iframed from anywhere:
+
+```html
+<iframe
+  src="https://your-app.example/embed/movie/550"
+  allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
+  allowfullscreen
+  style="width:100%;aspect-ratio:16/9;border:0"
+></iframe>
+```
+
+The page is public (no login) on purpose, since an embed on another site has no
+session here. Its `/api/stream/proxy` links are relative, so the player and the
+proxy share one origin — no CORS, no `base=` needed.

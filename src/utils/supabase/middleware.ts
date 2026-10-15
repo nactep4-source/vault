@@ -6,7 +6,9 @@ const supabaseKey =
   process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-const PUBLIC_PATHS = ['/login', '/forgot-password', '/auth/callback'];
+// `/embed` is the public direct-stream player: it is iframed from other sites,
+// which have no session here, so it must never be redirected to /login.
+const PUBLIC_PATHS = ['/login', '/forgot-password', '/auth/callback', '/embed'];
 
 function isPublicPath(pathname: string) {
   return PUBLIC_PATHS.some(

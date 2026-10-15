@@ -81,6 +81,22 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3000/login   # 200
   route also returns the same link through `/api/stream/proxy`, which re-sends that referer and rewrites
   playlist lines. Links are time-limited (~12 h). Verified: resolves + plays through the proxy for a movie
   and for a TV episode.
+  - **Ready-made player page: `/embed/[type]/[id]`** (`?season=&episode=` for TV) — a chrome-free page
+    that calls `/api/stream/direct` itself and plays `stream.proxy` with the bundled `hls.js`, so this app
+    can be iframed from anywhere instead of a third-party player. It is **deliberately public**: it is
+    listed in `PUBLIC_PATHS` in both `src/components/AuthGate.tsx` and
+    `src/utils/supabase/middleware.ts`, and `Navigation` renders nothing under `/embed`. Without those
+    three, a session-less embed gets redirected to `/login` and disappears inside the iframe. No `base=`
+    needed — the player and `/api/stream/proxy` share an origin. Verified in the preview: `/embed/movie/1148365`
+    resolves, attaches and plays without a session.
+  - **Don't size a full-bleed route with `fixed inset-0`.** Every route is wrapped in `.page-enter`
+    (`src/app/template.tsx`), whose animation leaves a `transform` on that wrapper
+    (`animation-fill-mode: forwards`), and a transformed ancestor becomes the containing block for
+    `position: fixed` descendants. The embed page's content is out of flow, so the wrapper measured
+    **0px tall** and `inset-0` resolved to a 0-height box — the player loaded and played but rendered
+    invisibly (black). It uses an in-flow `h-dvh` instead (`-mb-20 md:mb-0` cancels the mobile padding
+    the root layout puts on `<main>`). Verified: inside a 640×360 iframe the player is 632×356,
+    `readyState 4`, native controls show the real duration, and no app nav renders in the frame.
 
 ## Optional external integrations
 
