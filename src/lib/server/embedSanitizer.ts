@@ -85,23 +85,6 @@ export function stripAdScripts(html: string, pageHost: string) {
   );
 }
 
-// The embed's player frame points at the real player host; send it through this
-// proxy too so the ad scripts inside it get the same treatment. Frames to hosts
-// this proxy may not fetch are left untouched rather than broken.
-export function proxyNestedFrames(html: string) {
-  return html.replace(
-    /(<iframe\b[^>]*?\bsrc\s*=\s*["'])(https?:\/\/[^"']+)(["'])/gi,
-    (match: string, pre: string, url: string, post: string) => {
-      try {
-        if (!isAllowedHost(new URL(url).hostname)) return match;
-      } catch {
-        return match;
-      }
-      return `${pre}/api/embed?url=${encodeURIComponent(url)}${post}`;
-    }
-  );
-}
-
 /** Blocks window.open, cross-site link clicks and script-driven redirects. */
 export function guardScript(allowedOrigin: string) {
   return `<script>(function(){

@@ -60,9 +60,12 @@ wired to a Supabase project that has the `streamtape_files` table (`supabase/mig
   host/origin overrides were needed for the preview proxy. `next.config.mjs` is untouched.
 - `next dev` writes to `.next-dev` (gitignored); a production build would use `.next`.
 - `tsconfig.tsbuildinfo` and two `*.zip` archives sit in the repo root — harmless leftovers.
-- The **VidCore** player source always loads through `/api/embed` (its own player page opens a
-  casino popup on every click and redirects the frame to an ad page). The sanitizing rules live in
-  `src/lib/server/embedSanitizer.ts`, and the proxy also re-points VidCore's nested player frame at
-  itself. On `localhost` that upstream host answers with its own "404: NOT_FOUND" page for both the
-  proxied and the direct embed, so VidCore cannot be seen playing in the sandbox — that comes from
-  the third-party host, not from the proxy.
+- **VidCore** loads the embed direct, inside the app's popup-blocking `sandbox` (no
+  `allow-popups` / `allow-top-navigation`, inherited by its nested player frame) — that attribute is
+  what contains its casino popup and its anti-DevTools redirect.
+- `/api/embed` is only used for the app's "Clean mode" toggle; its rules live in
+  `src/lib/server/embedSanitizer.ts`. It must proxy the requested page only and never rewrite frames
+  *inside* it: those are third-party player apps that only run from their own origin, and in this
+  proxy's opaque-origin frame their storage access throws and they render blank. VidCore's player
+  page is hosted on Tencent EdgeOne (`*.edgeone.dev`) — a proxied player URL shows that host's
+  "404: NOT_FOUND" page instead of a player, which is what an earlier nested-frame rewrite produced.

@@ -2,17 +2,19 @@ import { NextResponse } from 'next/server';
 import {
   guardScript,
   isAllowedHost,
-  proxyNestedFrames,
   stripAdScripts,
 } from '@/lib/server/embedSanitizer';
 
 // "Clean mode" embed proxy.
 // Fetches an embed page server-side, strips ad scripts, injects the popup /
-// redirect guard, then serves it. It also routes the embed's own player frame
-// back through this proxy (proxyNestedFrames): VidCore.org serves a thin
-// wrapper that loads its real player page from a rotating player/CDN host, and
-// the ad payload lives in *that* page, so sanitizing the wrapper alone is not
-// enough.
+// redirect guard, then serves it.
+//
+// Only the requested page is proxied — frames nested inside it are left
+// pointing at their own host. Those are third-party player apps that only work
+// from their own origin (they read their own storage, and in this proxy's
+// opaque-origin frame that access throws, leaving a blank player), so they have
+// to load direct; their popups are contained by the `sandbox` attribute the app
+// puts on the embed iframe, not by this proxy.
 //
 // SECURITY: the response is served with a CSP `sandbox` header WITHOUT
 // allow-same-origin, so third-party code runs in an opaque origin and can
@@ -67,7 +69,6 @@ export async function GET(request: Request) {
     let html = await upstream.text();
 
     html = stripAdScripts(html, parsed.hostname.toLowerCase());
-    html = proxyNestedFrames(html);
 
     // <base> so relative assets still load from the embed's origin, plus guard.
     const inject = `<base href="${parsed.origin}/">` + guardScript(parsed.origin);
