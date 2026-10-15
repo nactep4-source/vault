@@ -6,10 +6,11 @@ import Hls from 'hls.js';
 // ── Our own player for the direct-stream API ─────────────────────────────────
 //
 // Plays what GET /api/stream/direct resolves for a TMDB id: the real HLS file
-// behind our default source, handed back through /api/stream/proxy because that
-// CDN only answers requests carrying `Referer: https://moviesapi.to/` — a header
+// behind one of our two sources, handed back through /api/stream/proxy because
+// those CDNs only answer requests carrying the source's own referer — a header
 // a browser cannot send. No third-party embed, so no injected ad scripts and no
-// popups.
+// popups. `server` pins a source (see the media page's "Server 2" tab); without
+// it the route uses whichever source carries the title.
 //
 // Used in two places: the public /embed/[type]/[id] page (iframe that from
 // anywhere) and the media page's "Direct" source tab. The proxy link is
@@ -38,6 +39,10 @@ type DirectStreamPlayerProps = {
   mediaId: string;
   season?: number | string;
   episode?: number | string;
+  // Which of /api/stream/direct's sources to pin (1 = moviesapi, 2 = vidsrc.pm).
+  // Omitted = the route's default, i.e. the first source with a fallback to the
+  // second for titles it does not carry.
+  server?: number;
   // Resolving or playing failed — the media page uses this to surface its
   // "try another source" banner instead of having to read this component's state.
   onError?: () => void;
@@ -49,6 +54,7 @@ export default function DirectStreamPlayer({
   mediaId,
   season = 1,
   episode = 1,
+  server,
   onError,
   className = 'w-full h-full bg-black',
 }: DirectStreamPlayerProps) {
@@ -73,6 +79,7 @@ export default function DirectStreamPlayer({
       query.set('season', String(season || 1));
       query.set('episode', String(episode || 1));
     }
+    if (server) query.set('server', String(server));
 
     fetch(`/api/stream/direct?${query.toString()}`)
       .then(async (res) => (await res.json()) as DirectStreamResponse)
@@ -92,7 +99,7 @@ export default function DirectStreamPlayer({
     return () => {
       cancelled = true;
     };
-  }, [mediaId, mediaType, season, episode]);
+  }, [mediaId, mediaType, season, episode, server]);
 
   // 2. Play it. hls.js where supported, native HLS (Safari) otherwise.
   useEffect(() => {

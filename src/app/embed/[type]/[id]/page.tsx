@@ -17,6 +17,10 @@ import DirectStreamPlayer from '@/components/DirectStreamPlayer';
 //
 // TV: /embed/tv/1399?season=1&episode=1
 //
+// `?server=2` pins the second stream source (vidsrc.pm) instead of the default
+// first one (moviesapi.to); without it the API falls back to server 2 by itself
+// when the first has nothing for the title.
+//
 // The player itself lives in src/components/DirectStreamPlayer.tsx, shared with
 // the media page's "Direct" source tab.
 //
@@ -35,6 +39,10 @@ function EmbedPlayer() {
   const mediaId = (Array.isArray(rawId) ? rawId[0] : rawId) || '';
   const season = searchParams?.get('season') ?? '1';
   const episode = searchParams?.get('episode') ?? '1';
+  // Optional: pin a stream source (1 = moviesapi, 2 = vidsrc.pm). Without it
+  // /api/stream/direct uses the first source that carries the title.
+  const serverParam = searchParams?.get('server');
+  const server = serverParam === '1' || serverParam === '2' ? Number(serverParam) : undefined;
 
   // NOT `fixed inset-0`: every route is wrapped in `.page-enter`
   // (src/app/template.tsx), whose animation leaves a `transform` on the wrapper
@@ -50,6 +58,7 @@ function EmbedPlayer() {
         mediaId={mediaId}
         season={season}
         episode={episode}
+        server={server}
       />
     </div>
   );

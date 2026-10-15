@@ -29,8 +29,15 @@ export async function GET(request: Request) {
 
   // Hosts behind /api/stream/direct: they serve playlists and segments under
   // disguised paths (`…/cdn/<base64>.js`, `…/file2/<base64>==`) with no media
-  // extension, so the extension rule below can't catch them.
-  const streamHosts = ['netrocdn.site', 'kurututujohn.workers.dev', 'vidspark.to'];
+  // extension, so the extension rule below can't catch them. `hd4u.sbs` is the
+  // second source's (vidsrc.pm) front: `/proxy?url=…` for the playlist and
+  // `/segment?url=…` for each part, both referer-locked to vidsrc.pm.
+  const streamHosts = [
+    'netrocdn.site',
+    'kurututujohn.workers.dev',
+    'vidspark.to',
+    'hd4u.sbs',
+  ];
 
   const domainAllowed =
     streamHosts.some(
@@ -51,8 +58,24 @@ export async function GET(request: Request) {
     return new NextResponse('Domain not allowed', { status: 403 });
   }
 
+  // The second source wraps every media URL in its own front
+  // (`p1.hd4u.sbs/proxy?url=…&data=…`, `p1.hd4u.sbs/segment?url=…&data=…`), and
+  // that front intermittently answers `503 Service Temporarily Unavailable`
+  // while the CDN it points at is fine — so talk to the real host instead. The
+  // access grant is only needed by that front; the CDN hands the same bytes to
+  // a plain request.
+  let fetchUrl = url;
   try {
-    const res = await fetch(url, {
+    if (/(^|\.)hd4u\.sbs$/.test(parsedUrl.hostname)) {
+      const inner = parsedUrl.searchParams.get('url');
+      if (inner) fetchUrl = inner;
+    }
+  } catch {
+    /* the outer URL was already validated above */
+  }
+
+  try {
+    const res = await fetch(fetchUrl, {
       headers: {
         'User-Agent':
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -104,13 +127,21 @@ export async function GET(request: Request) {
         }
       }
       let text = new TextDecoder().decode(Buffer.concat(chunks));
-      const baseUrl = url.substring(0, url.lastIndexOf('/') + 1);
       const toProxy = (target: string) =>
         `/api/stream/proxy?url=${encodeURIComponent(target)}&referer=${encodeURIComponent(
           referer
         )}`;
-      const absolute = (target: string) =>
-        target.startsWith('http') ? target : baseUrl + target;
+      // Resolve against the playlist URL the way a player would: the second
+      // source's parts are root-relative (`/segment?url=…`) and carry their
+      // access grant in the query, so joining naively would produce `//segment`
+      // and lose it.
+      const absolute = (target: string) => {
+        try {
+          return new URL(target, fetchUrl).toString();
+        } catch {
+          return target;
+        }
+      };
 
       // Playlists come in more than one shape: some CDNs hide the media
       // extension (`…/cdn/<base64>.js`, `…/file2/<base64>==`), so rewrite every

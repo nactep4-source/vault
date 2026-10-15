@@ -48,6 +48,9 @@ interface EmbedSource {
   // URL is still meaningful — it is the public /embed route, i.e. the link to
   // hand to someone else's iframe.
   own?: boolean;
+  // For `own` sources: which of /api/stream/direct's sources to pin. Omitted =
+  // the route picks (its first source, falling back to the second).
+  server?: number;
   getUrl: (tmdbId: string, type: 'movie' | 'tv', season?: number, episode?: number) => string;
 }
 
@@ -67,6 +70,20 @@ const EMBED_SOURCES: EmbedSource[] = [
       type === 'movie'
         ? `/embed/movie/${id}`
         : `/embed/tv/${id}?season=${s ?? 1}&episode=${e ?? 1}`,
+  },
+  {
+    // The same ad-free player, pinned to our second stream source (vidsrc.pm)
+    // instead of the first (moviesapi.to). The two carry different catalogues,
+    // so this is what to switch to when "Direct" has no stream for a title —
+    // although "Direct" itself already falls back to this source automatically.
+    name: 'Server 2',
+    color: '#22D3EE',
+    own: true,
+    server: 2,
+    getUrl: (id, type, s, e) =>
+      type === 'movie'
+        ? `/embed/movie/${id}?server=2`
+        : `/embed/tv/${id}?season=${s ?? 1}&episode=${e ?? 1}&server=2`,
   },
   {
     name: 'MoviesAPI',
@@ -1131,6 +1148,7 @@ export default function MediaDetailPage() {
                   mediaId={mediaId}
                   season={selectedSeason}
                   episode={selectedEpisode}
+                  server={activeSource.server}
                   onError={handleIframeError}
                 />
               ) : (
