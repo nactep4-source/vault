@@ -50,12 +50,28 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3000/login   # 200
   `<script src="/tc/ff-prime.php">`. They come from the player's *own* origin, so they can
   only be matched by path (`AD_PATHS`), not by host. No JS chunk injects them — they are
   plain script tags in the player HTML, so stripping the tags is enough.
-- **Clean mode breaks this player**, which is why no source sets `cleanByDefault`: through the
-  proxy the player area stays empty (its Next.js app never boots — likely because the proxied
-  document lives in an opaque origin), while the direct embed plays fine (poster, controls,
-  duration). Popups therefore stay blocked by the iframe `sandbox` attribute ("Popup blocker"
-  on the media page) and a viewer can opt into clean mode manually. The proxy's strip of
-  `crossorigin` attributes targets exactly that boot failure but is not proven to fix it.
+- **Clean mode's failure on this player was our own `<base>`, not the player (found 2026-10-15).** The
+  player page is a Next.js app that resolves its own asset/API URLs from the document URL, so the
+  `<base>` the proxy injected — so its root-relative assets would load from its origin instead of
+  ours — made its client router crash into *its own* error page (`<html id="__next_error__">` with
+  "This page couldn't load", title `0`). That is the "player area stays empty" of earlier notes, not
+  an opaque-origin problem: it reproduced in the preview with the page loaded **without** any iframe
+  sandbox, with the ad scripts put back, and with the guard script removed — so the opaque origin,
+  the ad stripping and the stripped `crossorigin` attributes were all innocent. A followed *player*
+  page (`PLAYER_HOSTS`, i.e. edgeone.dev) is now served with no `<base>`: `absolutize()` rewrites its
+  root-relative `src`/`href`/`poster`/`action` URLs and `playerBootstrap()` shims `fetch`/`XHR` (plus
+  in-memory storage, because clean mode's sandbox leaves the page in an opaque origin where
+  `localStorage` throws a `SecurityError`). Embed-site pages (moviesapi.to) keep the old `<base>`
+  path, so MoviesAPI clean mode is untouched. **Not verified end to end yet**: the rewritten page
+  still has to be confirmed to boot *and play* inside clean mode's sandboxed iframe before
+  `cleanByDefault` can be turned on for the VidCore tab.
+- **VidCore's ads are in-frame, and the vendor keeps re-enabling them.** `/tc/ff-tag.php` is a
+  popunder/overlay loader and `/tc/ff-prime.php` ("TrueClick FF primer") resets that vendor's own
+  frequency caps on every trusted gesture, so its ads fire again on every click. Live DOM check on
+  `/media/tv/1402` with the VidCore tab open and "Popup blocker: On": the iframe carries
+  `sandbox="allow-scripts allow-same-origin allow-forms allow-presentation"`, so the *new-tab* half
+  of a popunder is already blocked by the browser — what a viewer sees is the in-frame overlay the
+  vendor falls back to, which only clean mode can remove.
 - Ad *popup windows* and redirects are blocked by that iframe `sandbox` — the embeds are
   cross-origin, so page-level hooks (window.open, click handlers) can never see inside them.
   Ads rendered *inside* the player frame cannot be removed without proxying.

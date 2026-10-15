@@ -98,9 +98,12 @@ const EMBED_SOURCES: EmbedSource[] = [
     name: 'VidCore',
     color: '#A78BFA',
     referrerPolicy: DEFAULT_REFERRER_POLICY,
-    // NOTE: its player ships a popup/overlay ad SDK that only clean mode
-    // removes, but the player does not boot through /api/embed, so this source
-    // keeps clean mode off by default (see AGENTS.md).
+    // NOTE: its player ships a popup/overlay ad SDK (/tc/ff-tag.php +
+    // /tc/ff-prime.php, the latter resetting the vendor's frequency caps on
+    // every click, so its ads come back) that only clean mode removes. Clean
+    // mode is still off by default: the proxy now serves this player without a
+    // <base> so it boots, but it has not been verified to *play* that way yet
+    // — see AGENTS.md.
     getUrl: (id, type, s, e) => {
       const params = new URLSearchParams({
         theme: '7B2FFF',

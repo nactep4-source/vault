@@ -47,6 +47,54 @@ function isAllowedHost(host: string) {
   return [...ALLOWED_HOSTS, ...PLAYER_HOSTS].some((d) => host === d || host.endsWith('.' + d));
 }
 
+// A followed wrapper target, i.e. the real player page rather than the embed
+// site's own page.
+function isPlayerHost(host: string) {
+  host = host.toLowerCase();
+  return PLAYER_HOSTS.some((d) => host === d || host.endsWith('.' + d));
+}
+
+// The player is a Next.js app that resolves its own asset URLs from the document
+// URL, and our `<base>` (which exists so its root-relative assets reach its
+// origin instead of ours) makes it crash into its own "This page couldn't load"
+// error page. So a followed player page gets its root-relative URLs rewritten
+// here, plus the runtime shim below, and no <base> at all.
+function absolutize(html: string, origin: string) {
+  return html.replace(
+    /\b(src|href|poster|action)=(["'])\/(?!\/)/gi,
+    (_match, attr: string, quote: string) => `${attr}=${quote}${origin}/`
+  );
+}
+
+// Bootstrap for a followed player page, in place of a <base>:
+// - root-relative fetch/XHR URLs go to the player's origin, not ours;
+// - clean mode serves the page in an opaque origin (the iframe `sandbox` has no
+//   allow-same-origin), where touching storage throws. Storage is not usable
+//   there, so the player gets an in-memory fallback instead of a SecurityError
+//   that would take its whole app down.
+function playerBootstrap(origin: string) {
+  return `<script>(function(){
+var B=${JSON.stringify(origin)};
+function fx(u){return typeof u==='string'&&u.charAt(0)==='/'&&u.charAt(1)!=='/'?B+u:u;}
+try{if(window.fetch){var f=window.fetch;window.fetch=function(i,o){try{if(typeof i==='string')i=fx(i);}catch(e){}return f.call(this,i,o);};}}catch(e){}
+try{var x=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(){try{arguments[1]=fx(arguments[1]);}catch(e){}return x.apply(this,arguments);};}catch(e){}
+try{window.localStorage.getItem('x');}catch(e){
+  try{
+    function mk(){var m={};return{
+      getItem:function(k){return k in m?m[k]:null;},
+      setItem:function(k,v){m[k]=String(v);},
+      removeItem:function(k){delete m[k];},
+      clear:function(){m={};},
+      key:function(i){var ks=Object.keys(m);return i<ks.length?ks[i]:null;},
+      get length(){return Object.keys(m).length;}
+    };}
+    Object.defineProperty(window,'localStorage',{value:mk(),configurable:true});
+    Object.defineProperty(window,'sessionStorage',{value:mk(),configurable:true});
+  }catch(e2){}
+}
+})();</script>`;
+}
+
 // Player pages served through this proxy live in an opaque origin (see the
 // sandbox CSP below). Their own scripts/assets are marked `crossorigin`, which
 // from an opaque origin turns into a CORS request (Origin: null) that their
@@ -171,11 +219,17 @@ export async function GET(request: Request) {
       continue;
     }
 
-    // <base> so relative assets still load from the embed's origin, plus guard.
-    const inject = `<base href="${current.origin}/">` + guardScript(current.origin);
-    const served = /<head[^>]*>/i.test(html)
-      ? html.replace(/<head[^>]*>/i, (m) => m + inject)
-      : inject + html;
+    // Relative assets must load from the embed's origin, not ours. A followed
+    // player page gets URL rewriting plus a runtime shim instead of a <base>,
+    // which its Next.js router cannot survive (see playerBootstrap).
+    const playerPage = isPlayerHost(current.hostname);
+    const inject = playerPage
+      ? playerBootstrap(current.origin) + guardScript(current.origin)
+      : `<base href="${current.origin}/">` + guardScript(current.origin);
+    const withUrls = playerPage ? absolutize(html, current.origin) : html;
+    const served = /<head[^>]*>/i.test(withUrls)
+      ? withUrls.replace(/<head[^>]*>/i, (m) => m + inject)
+      : inject + withUrls;
 
     return new NextResponse(served, {
       status: 200,
