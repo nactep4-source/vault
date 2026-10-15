@@ -67,14 +67,20 @@ function absolutize(html: string, origin: string) {
 }
 
 // Bootstrap for a followed player page, in place of a <base>:
+// - the page is served from /api/embed?url=…, so the player's own scripts (which
+//   read the title/season/episode out of `location.pathname` — e.g.
+//   `/embed/tv/1402/1/1`) see the wrong URL and render nothing. The document URL
+//   is rewritten to the player's own path, which the frame can do since the
+//   proxied page is on our origin;
 // - root-relative fetch/XHR URLs go to the player's origin, not ours;
 // - clean mode serves the page in an opaque origin (the iframe `sandbox` has no
 //   allow-same-origin), where touching storage throws. Storage is not usable
 //   there, so the player gets an in-memory fallback instead of a SecurityError
 //   that would take its whole app down.
-function playerBootstrap(origin: string) {
+function playerBootstrap(origin: string, path: string) {
   return `<script>(function(){
-var B=${JSON.stringify(origin)};
+var B=${JSON.stringify(origin)},P=${JSON.stringify(path)};
+try{history.replaceState(null,'',P);}catch(e){}
 function fx(u){return typeof u==='string'&&u.charAt(0)==='/'&&u.charAt(1)!=='/'?B+u:u;}
 try{if(window.fetch){var f=window.fetch;window.fetch=function(i,o){try{if(typeof i==='string')i=fx(i);}catch(e){}return f.call(this,i,o);};}}catch(e){}
 try{var x=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(){try{arguments[1]=fx(arguments[1]);}catch(e){}return x.apply(this,arguments);};}catch(e){}
@@ -224,7 +230,8 @@ export async function GET(request: Request) {
     // which its Next.js router cannot survive (see playerBootstrap).
     const playerPage = isPlayerHost(current.hostname);
     const inject = playerPage
-      ? playerBootstrap(current.origin) + guardScript(current.origin)
+      ? playerBootstrap(current.origin, current.pathname + current.search) +
+        guardScript(current.origin)
       : `<base href="${current.origin}/">` + guardScript(current.origin);
     const withUrls = playerPage ? absolutize(html, current.origin) : html;
     const served = /<head[^>]*>/i.test(withUrls)

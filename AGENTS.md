@@ -50,21 +50,40 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3000/login   # 200
   `<script src="/tc/ff-prime.php">`. They come from the player's *own* origin, so they can
   only be matched by path (`AD_PATHS`), not by host. No JS chunk injects them — they are
   plain script tags in the player HTML, so stripping the tags is enough.
-- **Clean mode's failure on this player was our own `<base>`, not the player (found 2026-10-15).** The
-  player page is a Next.js app that resolves its own asset/API URLs from the document URL, so the
-  `<base>` the proxy injected — so its root-relative assets would load from its origin instead of
-  ours — made its client router crash into *its own* error page (`<html id="__next_error__">` with
-  "This page couldn't load", title `0`). That is the "player area stays empty" of earlier notes, not
-  an opaque-origin problem: it reproduced in the preview with the page loaded **without** any iframe
-  sandbox, with the ad scripts put back, and with the guard script removed — so the opaque origin,
-  the ad stripping and the stripped `crossorigin` attributes were all innocent. A followed *player*
-  page (`PLAYER_HOSTS`, i.e. edgeone.dev) is now served with no `<base>`: `absolutize()` rewrites its
-  root-relative `src`/`href`/`poster`/`action` URLs and `playerBootstrap()` shims `fetch`/`XHR` (plus
-  in-memory storage, because clean mode's sandbox leaves the page in an opaque origin where
-  `localStorage` throws a `SecurityError`). Embed-site pages (moviesapi.to) keep the old `<base>`
-  path, so MoviesAPI clean mode is untouched. **Not verified end to end yet**: the rewritten page
-  still has to be confirmed to boot *and play* inside clean mode's sandboxed iframe before
-  `cleanByDefault` can be turned on for the VidCore tab.
+- **Clean mode still cannot carry this player, and the reasons are now known (2026-10-15).** Three
+  separate things were found and verified in the preview:
+  1. *Our own `<base>` broke it.* The player page is a Next.js app that resolves its own asset/API URLs
+     from the document URL, so the `<base>` the proxy injected — so its root-relative assets would load
+     from its origin instead of ours — made its client router crash into *its own* error page
+     (`<html id="__next_error__">`, "This page couldn't load", title `0`). That was the "player area
+     stays empty" of earlier notes, and not an opaque-origin problem: it reproduced with the page loaded
+     **without** any iframe sandbox, with the ad scripts put back, and with the guard script removed — so
+     the opaque origin, the ad stripping and the stripped `crossorigin` attributes were all innocent. A
+     followed *player* page (`PLAYER_HOSTS`, i.e. edgeone.dev) is now served with no `<base>`:
+     `absolutize()` rewrites its root-relative `src`/`href`/`poster`/`action` URLs and
+     `playerBootstrap()` shims `fetch`/`XHR` plus in-memory storage (clean mode's sandbox leaves the page
+     in an opaque origin, where `localStorage` throws a `SecurityError`). Embed-site pages (moviesapi.to)
+     keep the old `<base>` path, so MoviesAPI clean mode is untouched. Verified: the cleaned page then
+     boots, every chunk and stylesheet loads from edgeone.dev, and the vendor's own overlay scripts
+     (backdrop + play button) run.
+  2. *It reads the media id from `location.pathname`* (`/embed/tv/<id>/<season>/<episode>`), which
+     `/api/embed?url=…` does not provide, so those scripts returned early on our URL. `playerBootstrap()`
+     now rewrites the document URL to the player's own path with `history.replaceState`.
+  3. *Its client app still renders nothing* — the body stays an empty Next shell (no player UI, no
+     `<video>`, no console error), even with the path mirrored, the vendor overlay drawn, and its API
+     reachable. Its API is what rules a cleaned copy out: the player calls it with **relative** paths
+     (axios `/backend/servers/…`, `/backend/tmdb/…`) relying on being **same-origin** with it, and that
+     API sends **no CORS headers** (`curl -H 'Origin: …'` → no `access-control-allow-origin`), so every
+     call from a page on our origin is blocked; its server also sets a `vs_embed=<URL path>` session
+     cookie our proxy cannot carry, and its bundle ships an explicit `isSandboxed` probe
+     (`try{document.domain=document.domain}`), like the VidSrc family. A same-origin API passthrough
+     (`/api/embed/api`) was tried and did work (200 JSON, and the page used it) — the app still rendered
+     nothing, so that route and the cookie were removed again instead of left as dead surface.
+  **Consequence: do not set `cleanByDefault` on the VidCore tab** — a cleaned copy can never play.
+  Removing those ads needs a *native* integration instead (resolve the stream server-side and play it in
+  our own player, as `Direct` does for moviesapi/vidsrc.pm); its
+  `/backend/servers/<type>/<id>?…` endpoint returns the link list with each `link` AES-encrypted by the
+  bundle.
 - **VidCore's ads are in-frame, and the vendor keeps re-enabling them.** `/tc/ff-tag.php` is a
   popunder/overlay loader and `/tc/ff-prime.php` ("TrueClick FF primer") resets that vendor's own
   frequency caps on every trusted gesture, so its ads fire again on every click. Live DOM check on
