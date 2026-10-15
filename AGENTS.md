@@ -64,4 +64,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3000/login   # 200
 
 - Streamtape downloads: `STREAMTAPE_LOGIN` + `STREAMTAPE_KEY`, and the mapping endpoints additionally
   need a hosted Supabase (`NEXT_PUBLIC_SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`).
+  Without those, `GET /api/streamtape/mappings` answers `200 {success: true, mapping: null,
+  configured: false}` (never a 500) so the download button on the media page just renders disabled,
+  and `POST`/`GET /api/streamtape/download` answer `503 "… is not configured."` — expected, not a bug.
 - `MIXDROP_*` appears in the old `.env.example` but is not referenced anywhere in `src/`.
