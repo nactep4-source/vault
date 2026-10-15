@@ -37,6 +37,29 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3000/login   # 200
 - `WATCHPACK_POLLING=true` is set in compose because bind mounts do not always deliver inotify events;
   hot reload depends on it.
 
+## Third-party players and ad blocking
+
+- `/api/embed` is the "Clean mode" proxy: it fetches an embed page server-side, strips ad
+  scripts, injects a popup/redirect guard, and serves it under a CSP `sandbox` (no
+  `allow-same-origin`, no `allow-popups`).
+- **vidcore.org serves a bare wrapper page** whose whole body is one `<iframe>` pointing at
+  `*.edgeone.dev`, where the real player (and its ads) live. The proxy detects that shape
+  (no `<script>` + exactly one allowed iframe) and follows into it, cleaning the player page
+  itself. Add new wrapper targets to `PLAYER_HOSTS` in the route.
+- **The vidcore player ships a popup/overlay ad SDK** as `<script src="/tc/ff-tag.php">` plus
+  `<script src="/tc/ff-prime.php">`. They come from the player's *own* origin, so they can
+  only be matched by path (`AD_PATHS`), not by host. No JS chunk injects them — they are
+  plain script tags in the player HTML, so stripping the tags is enough.
+- **Clean mode breaks this player**, which is why no source sets `cleanByDefault`: through the
+  proxy the player area stays empty (its Next.js app never boots — likely because the proxied
+  document lives in an opaque origin), while the direct embed plays fine (poster, controls,
+  duration). Popups therefore stay blocked by the iframe `sandbox` attribute ("Popup blocker"
+  on the media page) and a viewer can opt into clean mode manually. The proxy's strip of
+  `crossorigin` attributes targets exactly that boot failure but is not proven to fix it.
+- Ad *popup windows* and redirects are blocked by that iframe `sandbox` — the embeds are
+  cross-origin, so page-level hooks (window.open, click handlers) can never see inside them.
+  Ads rendered *inside* the player frame cannot be removed without proxying.
+
 ## Optional external integrations
 
 - Streamtape downloads: `STREAMTAPE_LOGIN` + `STREAMTAPE_KEY`, and the mapping endpoints additionally

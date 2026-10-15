@@ -39,6 +39,9 @@ interface EmbedSource {
   // Override the popup-blocking sandbox for a source that refuses to play
   // when sandboxed. `false` = never sandbox this source.
   sandbox?: string | false;
+  // Load this source through /api/embed by default because its player ships
+  // popup/overlay ad scripts. The viewer can still turn clean mode off.
+  cleanByDefault?: boolean;
   getUrl: (tmdbId: string, type: 'movie' | 'tv', season?: number, episode?: number) => string;
 }
 
@@ -59,6 +62,9 @@ const EMBED_SOURCES: EmbedSource[] = [
     name: 'VidCore',
     color: '#A78BFA',
     referrerPolicy: DEFAULT_REFERRER_POLICY,
+    // NOTE: its player ships a popup/overlay ad SDK that only clean mode
+    // removes, but the player does not boot through /api/embed, so this source
+    // keeps clean mode off by default (see AGENTS.md).
     getUrl: (id, type, s, e) => {
       const params = new URLSearchParams({
         theme: '7B2FFF',
@@ -194,9 +200,11 @@ export default function MediaDetailPage() {
   const [iframeLoaded, setIframeLoaded] = useState(false);
   const [showSourceHint, setShowSourceHint] = useState(false);
   const [blockPopups, setBlockPopups] = useState(true);
-  // Clean mode (experimental): loads the embed through /api/embed. Many
-  // players refuse to run this way, so it is OFF by default.
-  const [cleanMode, setCleanMode] = useState(false);
+  // Clean mode: loads the embed through /api/embed, which strips the ad scripts
+  // the player ships. Sources whose player is ad-heavy opt in with
+  // cleanByDefault; `null` means "use the source's default", so the toggle
+  // below still lets the viewer override it either way.
+  const [cleanMode, setCleanMode] = useState<boolean | null>(null);
   // Redirect recovery: the player iframe should load exactly once. A second
   // load event means the embed navigated itself somewhere else (ad redirect),
   // so we remount it with the original URL. Works in every browser.
@@ -205,6 +213,8 @@ export default function MediaDetailPage() {
   const loadCountRef = useRef(0);
   const recoveriesRef = useRef(0);
   const firstLoadAtRef = useRef(0);
+  const activeSource = EMBED_SOURCES[activeSourceIndex];
+  const cleanActive = cleanMode ?? activeSource.cleanByDefault === true;
 
   // Episode browsing rail (separate from the player's own season/episode
   // selects — this is what's visible on the page before you've hit play)
@@ -247,11 +257,11 @@ export default function MediaDetailPage() {
 
   useEffect(() => {
     recoveriesRef.current = 0;
-  }, [activeSourceIndex, selectedSeason, selectedEpisode, cleanMode, blockPopups]);
+  }, [activeSourceIndex, selectedSeason, selectedEpisode, cleanActive, blockPopups]);
 
   useEffect(() => {
     loadCountRef.current = 0;
-  }, [iframeKey, recoverKey, activeSourceIndex, selectedSeason, selectedEpisode, cleanMode, blockPopups]);
+  }, [iframeKey, recoverKey, activeSourceIndex, selectedSeason, selectedEpisode, cleanActive, blockPopups]);
 
   const handleFrameLoad = () => {
     loadCountRef.current += 1;
@@ -511,8 +521,8 @@ export default function MediaDetailPage() {
   const getEmbedUrl = useCallback(() => {
     const source = EMBED_SOURCES[activeSourceIndex];
     const url = source.getUrl(mediaId, mediaType, selectedSeason, selectedEpisode);
-    return cleanMode ? `/api/embed?url=${encodeURIComponent(url)}` : url;
-  }, [mediaId, mediaType, selectedSeason, selectedEpisode, activeSourceIndex, cleanMode]);
+    return cleanActive ? `/api/embed?url=${encodeURIComponent(url)}` : url;
+  }, [mediaId, mediaType, selectedSeason, selectedEpisode, activeSourceIndex, cleanActive]);
 
   const handleWatchNow = (seasonOverride?: number, episodeOverride?: number) => {
     setShowPlayer(true);
@@ -578,6 +588,7 @@ export default function MediaDetailPage() {
 
   const handleSourceChange = (index: number) => {
     setActiveSourceIndex(index);
+    setCleanMode(null); // back to the newly selected source's own default
     setLoadError(false);
     setIframeLoaded(false);
     setIframeKey((k) => k + 1);
@@ -983,18 +994,18 @@ export default function MediaDetailPage() {
               ))}
               <button
                 onClick={() => {
-                  setCleanMode((v) => !v);
+                  setCleanMode(!cleanActive);
                   setIframeLoaded(false);
                   setIframeKey((k) => k + 1);
                 }}
                 title="Loads the player through our server with ad scripts removed. Turn off if the video won't play."
                 className={`ml-auto px-3.5 py-1.5 rounded-lg font-medium text-xs transition-all cursor-pointer border ${
-                  cleanMode
+                  cleanActive
                     ? 'bg-violet/20 border-violet/50 text-violet-light'
                     : 'bg-void-2 border-glass-border text-muted hover:text-foreground'
                 }`}
               >
-                Clean mode: {cleanMode ? 'On' : 'Off'}
+                Clean mode: {cleanActive ? 'On' : 'Off'}
               </button>
               <button
                 onClick={() => {
@@ -1079,11 +1090,11 @@ export default function MediaDetailPage() {
 
               <iframe
                 ref={iframeRef}
-                key={`${iframeKey}-${activeSourceIndex}-${selectedSeason}-${selectedEpisode}-${blockPopups}-${cleanMode}-${recoverKey}`}
+                key={`${iframeKey}-${activeSourceIndex}-${selectedSeason}-${selectedEpisode}-${blockPopups}-${cleanActive}-${recoverKey}`}
                 src={getEmbedUrl()}
                 className="w-full h-full"
                 allowFullScreen
-                {...(cleanMode
+                {...(cleanActive
                   ? { sandbox: CLEAN_MODE_SANDBOX } // no allow-same-origin: embed code can't touch our origin
                   : blockPopups && EMBED_SOURCES[activeSourceIndex].sandbox !== false
                     ? { sandbox: EMBED_SOURCES[activeSourceIndex].sandbox || POPUP_BLOCK_SANDBOX }
