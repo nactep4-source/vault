@@ -1,0 +1,76 @@
+'use client';
+
+import React, { Suspense } from 'react';
+import { useParams, useSearchParams } from 'next/navigation';
+import DirectStreamPlayer from '@/components/DirectStreamPlayer';
+
+// ── Embeddable player page ───────────────────────────────────────────────────
+//
+// A chrome-free, public page that plays the stream resolved by
+// GET /api/stream/direct, so this app can be dropped into anyone's iframe
+// instead of a third-party player:
+//
+//   <iframe src="https://your-app.example/embed/movie/550"
+//           allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
+//           allowfullscreen
+//           style="width:100%;aspect-ratio:16/9;border:0"></iframe>
+//
+// TV: /embed/tv/1399?season=1&episode=1
+//
+// `?server=2` pins the second stream source (vidsrc.pm) instead of the default
+// first one (moviesapi.to); without it the API falls back to server 2 by itself
+// when the first has nothing for the title.
+//
+// The player itself lives in src/components/DirectStreamPlayer.tsx, shared with
+// the media page's "Direct" source tab.
+//
+// This route is public on purpose (see PUBLIC_PATHS in AuthGate and the
+// Supabase session middleware) — an embed on someone else's site has no session.
+
+function EmbedPlayer() {
+  const params = useParams();
+  const searchParams = useSearchParams();
+
+  const rawType = params?.type;
+  const rawId = params?.id;
+  const mediaType = ((Array.isArray(rawType) ? rawType[0] : rawType) || 'movie') as
+    | 'movie'
+    | 'tv';
+  const mediaId = (Array.isArray(rawId) ? rawId[0] : rawId) || '';
+  const season = searchParams?.get('season') ?? '1';
+  const episode = searchParams?.get('episode') ?? '1';
+  // Optional: pin a stream source (1 = moviesapi, 2 = vidsrc.pm, 3 = VidCore,
+  // 4 = VidSrc). Without it /api/stream/direct uses the first source that
+  // carries the title; 3 and 4 are only ever used when pinned.
+  const serverParam = searchParams?.get('server');
+  const server = ['1', '2', '3', '4'].includes(serverParam ?? '')
+    ? Number(serverParam)
+    : undefined;
+
+  // NOT `fixed inset-0`: every route is wrapped in `.page-enter`
+  // (src/app/template.tsx), whose animation leaves a `transform` on the wrapper
+  // — and a transformed ancestor becomes the containing block for fixed
+  // descendants. The player would then be out of flow inside a wrapper that
+  // measured 0px tall and render invisibly. An in-flow viewport height is
+  // immune to that; `-mb-20 md:mb-0` cancels the mobile bottom-nav padding the
+  // root layout puts on `<main>`.
+  return (
+    <div className="relative h-dvh w-full -mb-20 md:mb-0 bg-black">
+      <DirectStreamPlayer
+        mediaType={mediaType}
+        mediaId={mediaId}
+        season={season}
+        episode={episode}
+        server={server}
+      />
+    </div>
+  );
+}
+
+export default function EmbedPlayerPage() {
+  return (
+    <Suspense fallback={<div className="h-dvh w-full bg-black" />}>
+      <EmbedPlayer />
+    </Suspense>
+  );
+}

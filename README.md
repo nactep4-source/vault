@@ -56,3 +56,117 @@ curl -X POST https://your-app.example/api/streamtape/mappings \
 ```
 
 For a TV episode, include `season` and `episode`. Look up a mapping with `/api/streamtape/mappings?tmdb_id=550&type=movie`, or verify up to 100 provider files with `/api/streamtape/info?file=FILE_ID_1,FILE_ID_2`.
+
+## Direct Stream Links
+
+`GET /api/stream/direct` resolves a TMDB id to the actual playable video file
+(HLS) behind the default source, plus its subtitle tracks, so your own player or
+iframe can use it instead of embedding a third-party player:
+
+```text
+/api/stream/direct?tmdb_id=550&type=movie
+/api/stream/direct?tmdb_id=1399&type=tv&season=1&episode=1
+/api/stream/direct?tmdb_id=550&type=movie&base=https://your-app.example
+```
+
+```json
+{
+  "success": true,
+  "title": "Fight Club",
+  "stream": {
+    "url": "https://…/master.m3u8",
+    "type": "hls",
+    "referer": "https://moviesapi.to/",
+    "proxy": "/api/stream/proxy?url=…"
+  },
+  "tracks": [{ "label": "English", "url": "https://…/eng.vtt", "proxy": "/api/stream/proxy?url=…" }]
+}
+```
+
+`proxy` links are relative so they work from anything served by this app. A
+player on **another origin** should send `base=https://your-app.example` — the
+links then come back absolute, pointing at that app — or join the relative path
+with the app's own URL itself.
+
+Give your player `stream.proxy` (and each `tracks[].proxy`), not `stream.url`:
+the media CDN only answers requests that carry `Referer: https://moviesapi.to/`,
+which a browser on another origin will not send. The proxy adds that referer
+server-side and rewrites the playlist so its segments keep working through it.
+`stream.url` plus `referer` is for server-side use only.
+
+### Two sources
+
+The stream comes from one of two independent providers, both speaking the same
+player API:
+
+| `server` | Provider | Referer it needs |
+| --- | --- | --- |
+| `1` (default) | moviesapi.to | `https://moviesapi.to/` |
+| `2` | vidsrc.pm | `https://vidsrc.pm/` |
+
+Their catalogues differ, which is the point: without `server` the route tries `1`
+first and uses `2` for titles `1` does not carry, so the default response already
+covers both. Pass `server=2` to pin the second one:
+
+```text
+/api/stream/direct?tmdb_id=550&type=movie&server=2
+```
+
+The response reports which provider answered (`server`, `provider`) and the
+`referer` to hand to `/api/stream/proxy`, so a player picks up the right one
+automatically. The app's media pages expose the same choice as their "Server 2"
+tab. When neither source can play a title the route answers HTTP `404` with
+`success: false`, an `error` string to show the viewer and a `reason` of
+`"unavailable"` (no source carries the title) or `"upstream-error"` (a source
+failed). It never answers a 5xx — intermediaries commonly replace those with an
+error page of their own, which would hide the reason. A "no stream" answer is the
+message to display, not a bug in the player.
+
+The response allows cross-origin reads (`Access-Control-Allow-Origin: *`), and
+links are time-limited — resolve them per playback, don't store them.
+
+### Ready-made player (iframe)
+
+If you'd rather not write a player, this app serves one:
+
+```text
+/embed/movie/550
+/embed/tv/1399?season=1&episode=1
+```
+
+It resolves the stream itself and plays it with hls.js — no third-party embed,
+no ad scripts — so it can be iframed from anywhere:
+
+```html
+<iframe
+  src="https://your-app.example/embed/movie/550"
+  allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
+  allowfullscreen
+  style="width:100%;aspect-ratio:16/9;border:0"
+></iframe>
+```
+
+The page is public (no login) on purpose, since an embed on another site has no
+session here. Its `/api/stream/proxy` links are relative, so the player and the
+proxy share one origin — no CORS, no `base=` needed.
+
+The app's own media pages use that same player: the **Direct** source tab on
+`/media/movie/<id>` and `/media/tv/<id>` is the first tab, so "Watch now" plays
+through our own player by default instead of a third-party embed. That tab has no
+"Clean mode"/"Popup blocker" toggles — there is nothing to strip or block — and if
+a title has no stream, "Try next source" moves on to the embeds.
+
+When the player cannot play a title it says why, and only offers **Try again**
+when trying again can help: a source that failed (or a stream link that has aged
+out — they are time-limited) is worth a second resolve, while a title the sources
+do not carry is not, and there "Try next source" is the way on. This player plays
+what those sources hold, not the whole TMDB catalogue.
+
+Because `/api/stream/proxy` can only answer a playlist once it has drained it from
+the CDN, its first byte is the whole drain, and these shards drip-feed: measured
+through it, a series variant playlist took 15.6 s and a movie's reached 81 s on a
+throttled shard. hls.js's defaults for playlists (10 s to first byte, 20 s in total)
+were therefore aborting series the proxy had delivered fine, so the player raises
+them to 90 s / 150 s (with retries). Those are ceilings, not waits — playback starts
+as soon as the playlist arrives, and a dead shard still fails, because the proxy
+gives up after 20 s without headers or 60 s between body chunks.

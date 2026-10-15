@@ -33,6 +33,11 @@ export async function getStreamtapeFileInfo(fileIds: string[]) {
   return data.result as Record<string, StreamtapeFileInfo>;
 }
 
+/** Supabase is optional: mappings need a hosted project, the rest of the app does not. */
+export function isServiceClientConfigured() {
+  return Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
+}
+
 export function createServiceClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;

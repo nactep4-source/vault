@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import {
   createServiceClient,
   getStreamtapeFileInfo,
+  isServiceClientConfigured,
   isStreamtapeAdmin,
 } from '@/lib/server/streamtape';
 
@@ -18,6 +19,11 @@ export async function GET(request: Request) {
 
   if (!tmdbId || !['movie', 'tv'].includes(mediaType || '')) {
     return errorResponse('Required: tmdb_id and type (movie|tv).', 400);
+  }
+
+  // No hosted Supabase means no mappings stored — report "none" instead of failing.
+  if (!isServiceClientConfigured()) {
+    return NextResponse.json({ success: true, mapping: null, configured: false });
   }
 
   try {
@@ -41,6 +47,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   if (!isStreamtapeAdmin(request)) return errorResponse('Unauthorized.', 401);
+  if (!isServiceClientConfigured()) return errorResponse('Supabase is not configured.', 503);
 
   let body: {
     tmdb_id?: string;

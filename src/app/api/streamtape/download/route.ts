@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createServiceClient } from '@/lib/server/streamtape';
+import { createServiceClient, isServiceClientConfigured } from '@/lib/server/streamtape';
 
 const STREAMTAPE_API = 'https://api.streamtape.com/file';
 const MAX_WAIT_SECONDS = 30;
@@ -23,12 +23,15 @@ export async function GET(request: Request) {
     return errorResponse('Provide file, or tmdb_id and type (movie|tv).', 400);
   }
   if (!login || !key) {
-    console.error('[Streamtape] Missing STREAMTAPE_LOGIN or STREAMTAPE_KEY.');
+    console.warn('[Streamtape] Missing STREAMTAPE_LOGIN or STREAMTAPE_KEY.');
     return errorResponse('Streamtape is not configured.', 503);
   }
 
   try {
     if (!file && tmdbId && mediaType) {
+      if (!isServiceClientConfigured()) {
+        return errorResponse('Supabase is not configured.', 503);
+      }
       const supabase = createServiceClient();
       const { data, error } = await supabase
         .from('streamtape_files')

@@ -7,6 +7,8 @@ import { Play, Heart, Check, Plus } from 'lucide-react';
 import AppImage from '@/components/ui/AppImage';
 import { ShimmerImage, ShimmerCard } from '@/components/Shimmer';
 import StreamtapeDownloadButton from '@/components/StreamtapeDownloadButton';
+import DirectStreamPlayer from '@/components/DirectStreamPlayer';
+import PlayerStage from '@/components/PlayerStage';
 import {
   getMovieDetails,
   getTVDetails,
@@ -39,6 +41,17 @@ interface EmbedSource {
   // Override the popup-blocking sandbox for a source that refuses to play
   // when sandboxed. `false` = never sandbox this source.
   sandbox?: string | false;
+  // Load this source through /api/embed by default because its player ships
+  // popup/overlay ad scripts. The viewer can still turn clean mode off.
+  cleanByDefault?: boolean;
+  // Our own player rather than a third-party embed: the media page renders
+  // DirectStreamPlayer for this source instead of this URL in an iframe. The
+  // URL is still meaningful — it is the public /embed route, i.e. the link to
+  // hand to someone else's iframe.
+  own?: boolean;
+  // For `own` sources: which of /api/stream/direct's sources to pin. Omitted =
+  // the route picks (its first source, falling back to the second).
+  server?: number;
   getUrl: (tmdbId: string, type: 'movie' | 'tv', season?: number, episode?: number) => string;
 }
 
@@ -46,6 +59,33 @@ const DEFAULT_ALLOW = 'autoplay; fullscreen; picture-in-picture; encrypted-media
 const DEFAULT_REFERRER_POLICY: React.HTMLAttributeReferrerPolicy = 'origin';
 
 const EMBED_SOURCES: EmbedSource[] = [
+  {
+    // Our own player on the same provider MoviesAPI's embed uses, minus its ad
+    // scripts and popups. Being first makes it the default source, so "Watch
+    // now" plays through our player; when a title has no stream, the usual
+    // "Try next source" banner offers the third-party embeds.
+    name: 'Direct',
+    color: '#7B2FFF',
+    own: true,
+    getUrl: (id, type, s, e) =>
+      type === 'movie'
+        ? `/embed/movie/${id}`
+        : `/embed/tv/${id}?season=${s ?? 1}&episode=${e ?? 1}`,
+  },
+  {
+    // The same ad-free player, pinned to our second stream source (vidsrc.pm)
+    // instead of the first (moviesapi.to). The two carry different catalogues,
+    // so this is what to switch to when "Direct" has no stream for a title —
+    // although "Direct" itself already falls back to this source automatically.
+    name: 'Server 2',
+    color: '#22D3EE',
+    own: true,
+    server: 2,
+    getUrl: (id, type, s, e) =>
+      type === 'movie'
+        ? `/embed/movie/${id}?server=2`
+        : `/embed/tv/${id}?season=${s ?? 1}&episode=${e ?? 1}&server=2`,
+  },
   {
     name: 'MoviesAPI',
     color: '#FF9500',
@@ -56,18 +96,21 @@ const EMBED_SOURCES: EmbedSource[] = [
         : `https://moviesapi.to/tv/${id}/${s ?? 1}/${e ?? 1}`,
   },
   {
+    // Resolved server-side (server 3) and played in our own player. Its embed
+    // ships a popup/overlay ad SDK (/tc/ff-tag.php + /tc/ff-prime.php, the
+    // latter resetting the vendor's frequency caps on every click, so its ads
+    // come back) that clean mode could never remove — a proxied copy of that
+    // player cannot run. Playing its streams natively sidesteps the player
+    // entirely: the bundle resolves most of its servers through an aggregator
+    // that answers plain HLS links (see src/lib/server/directSources/vidcore.ts).
     name: 'VidCore',
     color: '#A78BFA',
-    referrerPolicy: DEFAULT_REFERRER_POLICY,
-    getUrl: (id, type, s, e) => {
-      const params = new URLSearchParams({
-        theme: '7B2FFF',
-        autoplay: 'true',
-      });
-      return type === 'movie'
-        ? `https://vidcore.org/embed/movie/${id}?${params.toString()}`
-        : `https://vidcore.org/embed/tv/${id}/${s ?? 1}/${e ?? 1}?${params.toString()}`;
-    },
+    own: true,
+    server: 3,
+    getUrl: (id, type, s, e) =>
+      type === 'movie'
+        ? `/embed/movie/${id}?server=3`
+        : `/embed/tv/${id}?season=${s ?? 1}&episode=${e ?? 1}&server=3`,
   },
   {
     // Confirmed against vidcore.io's own docs — a different service from
@@ -102,22 +145,32 @@ const EMBED_SOURCES: EmbedSource[] = [
     },
   },
   {
+    // Resolved server-side (server 4) and played in our own player: the embed
+    // could be neither sandboxed nor proxied — this player family refuses any
+    // sandboxed frame, and a proxied copy of its player is referrer-locked — so
+    // embedding it was the one way to keep its ad redirects, which nothing
+    // could block. Its own stream links need no such protection: /api/stream/direct
+    // walks the same chain the player does (vs_src.php → player page → apiToken
+    // → encrypted stream list → per-host token) and hands back a plain HLS link.
     name: 'VidSrc',
     color: '#38BDF8',
-    referrerPolicy: DEFAULT_REFERRER_POLICY,
+    own: true,
+    server: 4,
     getUrl: (id, type, s, e) =>
       type === 'movie'
-        ? `https://vidsrc.sh/embed/movie/${id}`
-        : `https://vidsrc.sh/embed/tv/${id}/${s ?? 1}/${e ?? 1}`,
+        ? `/embed/movie/${id}?server=4`
+        : `/embed/tv/${id}?season=${s ?? 1}&episode=${e ?? 1}&server=4`,
   },
 ];
 
 // Popup / redirect blocking.
 // The embeds are cross-origin iframes, so page-level hooks (window.open,
 // click handlers) never see what happens inside them. The only reliable
-// control is the iframe `sandbox` attribute: the player still loads and
-// plays, but it is NOT granted allow-popups / allow-top-navigation, so it
-// can't open new tabs or redirect this page.
+// control is the iframe `sandbox` attribute: the player is NOT granted
+// allow-popups / allow-top-navigation, so it can't open new tabs or redirect
+// this page — provided the source still plays that way. The VidSrc family
+// does not: it refuses ANY sandboxed frame, so it is opted out with
+// `sandbox: false` below (see AGENTS.md).
 const POPUP_BLOCK_SANDBOX =
   'allow-scripts allow-same-origin allow-forms allow-presentation';
 // Used for proxied embeds served from our own origin — must NOT include
@@ -192,11 +245,16 @@ export default function MediaDetailPage() {
   const [iframeKey, setIframeKey] = useState(0);
   const [loadError, setLoadError] = useState(false);
   const [iframeLoaded, setIframeLoaded] = useState(false);
+  // Reported by our own player only; the play screen keeps its chrome up while
+  // the picture is paused (a third-party embed can't tell us, so it is null).
+  const [playerPlaying, setPlayerPlaying] = useState(false);
   const [showSourceHint, setShowSourceHint] = useState(false);
   const [blockPopups, setBlockPopups] = useState(true);
-  // Clean mode (experimental): loads the embed through /api/embed. Many
-  // players refuse to run this way, so it is OFF by default.
-  const [cleanMode, setCleanMode] = useState(false);
+  // Clean mode: loads the embed through /api/embed, which strips the ad scripts
+  // the player ships. Sources whose player is ad-heavy opt in with
+  // cleanByDefault; `null` means "use the source's default", so the toggle
+  // below still lets the viewer override it either way.
+  const [cleanMode, setCleanMode] = useState<boolean | null>(null);
   // Redirect recovery: the player iframe should load exactly once. A second
   // load event means the embed navigated itself somewhere else (ad redirect),
   // so we remount it with the original URL. Works in every browser.
@@ -205,6 +263,9 @@ export default function MediaDetailPage() {
   const loadCountRef = useRef(0);
   const recoveriesRef = useRef(0);
   const firstLoadAtRef = useRef(0);
+  const activeSource = EMBED_SOURCES[activeSourceIndex];
+  const cleanActive = cleanMode ?? activeSource.cleanByDefault === true;
+  const isOwnSource = activeSource.own === true;
 
   // Episode browsing rail (separate from the player's own season/episode
   // selects — this is what's visible on the page before you've hit play)
@@ -247,11 +308,11 @@ export default function MediaDetailPage() {
 
   useEffect(() => {
     recoveriesRef.current = 0;
-  }, [activeSourceIndex, selectedSeason, selectedEpisode, cleanMode, blockPopups]);
+  }, [activeSourceIndex, selectedSeason, selectedEpisode, cleanActive, blockPopups]);
 
   useEffect(() => {
     loadCountRef.current = 0;
-  }, [iframeKey, recoverKey, activeSourceIndex, selectedSeason, selectedEpisode, cleanMode, blockPopups]);
+  }, [iframeKey, recoverKey, activeSourceIndex, selectedSeason, selectedEpisode, cleanActive, blockPopups]);
 
   const handleFrameLoad = () => {
     loadCountRef.current += 1;
@@ -511,8 +572,11 @@ export default function MediaDetailPage() {
   const getEmbedUrl = useCallback(() => {
     const source = EMBED_SOURCES[activeSourceIndex];
     const url = source.getUrl(mediaId, mediaType, selectedSeason, selectedEpisode);
-    return cleanMode ? `/api/embed?url=${encodeURIComponent(url)}` : url;
-  }, [mediaId, mediaType, selectedSeason, selectedEpisode, activeSourceIndex, cleanMode]);
+    // Our own player page carries no ads, and /api/embed is an HTML-stripping
+    // proxy for third-party pages — never wrap it around our own route.
+    if (source.own) return url;
+    return cleanActive ? `/api/embed?url=${encodeURIComponent(url)}` : url;
+  }, [mediaId, mediaType, selectedSeason, selectedEpisode, activeSourceIndex, cleanActive]);
 
   const handleWatchNow = (seasonOverride?: number, episodeOverride?: number) => {
     setShowPlayer(true);
@@ -578,6 +642,7 @@ export default function MediaDetailPage() {
 
   const handleSourceChange = (index: number) => {
     setActiveSourceIndex(index);
+    setCleanMode(null); // back to the newly selected source's own default
     setLoadError(false);
     setIframeLoaded(false);
     setIframeKey((k) => k + 1);
@@ -732,435 +797,371 @@ export default function MediaDetailPage() {
       ? detail.backdropImg
       : detail.img;
 
+  // ── What the play screen needs ─────────────────────────────────────────────
+  // This page owns the player's state (which source is active, whether the
+  // embed has loaded, the redirect-recovery counters); PlayerStage is only its
+  // presentation, so everything it takes is assembled here.
+
+  const closePlayer = () => {
+    setShowPlayer(false);
+    setActiveSourceIndex(0);
+    setLoadError(false);
+    setPlayerPlaying(false);
+  };
+
+  // The stage's second line: for a series, which episode is playing (named from
+  // TMDB when we already have that season's list), otherwise the movie's year
+  // and runtime.
+  const playingEpisode =
+    !isMovie && selectedSeason === browseSeason
+      ? episodes.find((episode) => episode.episodeNumber === selectedEpisode)
+      : undefined;
+  const stageContext = isMovie
+    ? [releaseYear, extraInfo].filter(Boolean).join(' · ')
+    : `Season ${selectedSeason}, Episode ${selectedEpisode}${
+        playingEpisode ? ` · ${playingEpisode.name}` : ''
+      }`;
+
+  // What goes on the picture: our own player, or the third-party embed with the
+  // attributes that source needs (see EMBED_SOURCES).
+  const playerSurface = isOwnSource ? (
+    <DirectStreamPlayer
+      mediaType={mediaType}
+      mediaId={mediaId}
+      season={selectedSeason}
+      episode={selectedEpisode}
+      server={activeSource.server}
+      onError={handleIframeError}
+      onPlayingChange={setPlayerPlaying}
+    />
+  ) : (
+    <iframe
+      ref={iframeRef}
+      key={`${iframeKey}-${activeSourceIndex}-${selectedSeason}-${selectedEpisode}-${blockPopups}-${cleanActive}-${recoverKey}`}
+      src={getEmbedUrl()}
+      className="w-full h-full"
+      allowFullScreen
+      {...(cleanActive
+        ? { sandbox: CLEAN_MODE_SANDBOX }
+        : blockPopups && EMBED_SOURCES[activeSourceIndex].sandbox !== false
+          ? { sandbox: EMBED_SOURCES[activeSourceIndex].sandbox || POPUP_BLOCK_SANDBOX }
+          : {})}
+      {...(EMBED_SOURCES[activeSourceIndex].allow !== undefined
+        ? { allow: EMBED_SOURCES[activeSourceIndex].allow }
+        : { allow: DEFAULT_ALLOW })}
+      {...(EMBED_SOURCES[activeSourceIndex].referrerPolicy !== undefined
+        ? { referrerPolicy: EMBED_SOURCES[activeSourceIndex].referrerPolicy }
+        : {})}
+      style={{ border: 'none', display: 'block', position: 'relative', zIndex: 0 }}
+      title={`${detail.title} - Source ${activeSourceIndex + 1}`}
+      onLoad={handleFrameLoad}
+      onError={handleIframeError}
+    />
+  );
+
+  // "Up Next" card — manual, no autoplay timer: the embed sources are
+  // cross-origin iframes, so there is no reliable end-of-episode signal, and a
+  // timer guessed from the runtime would be wrong the moment anyone pauses.
+  const upNextCard =
+    nextEp && (iframeLoaded || isOwnSource) && !nextEpDismissed ? (
+      <div className="absolute bottom-4 right-4 z-30 w-[280px] flex items-center gap-3 bg-void-2/85 backdrop-blur-md p-2.5 rounded-xl border border-glass-border shadow-[0_12px_32px_rgba(0,0,0,0.5)]">
+        <div className="relative flex-none w-16 aspect-video rounded-md overflow-hidden bg-void-3">
+          {nextEp.ep.stillImg ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={nextEp.ep.stillImg}
+              alt={nextEp.ep.name}
+              className="w-full h-full object-cover"
+            />
+          ) : null}
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-[9.5px] font-semibold uppercase tracking-wider text-violet-light mb-0.5">
+            Up next · S{nextEp.season}E{nextEp.ep.episodeNumber}
+          </p>
+          <p className="font-display text-[12.5px] font-semibold text-foreground leading-tight line-clamp-1">
+            {nextEp.ep.name}
+          </p>
+        </div>
+        <button
+          onClick={() => playEpisode(nextEp.season, nextEp.ep.episodeNumber)}
+          aria-label="Play next episode"
+          className="flex-none w-8 h-8 rounded-lg flex items-center justify-center hover:opacity-90 active:scale-95 transition-all duration-150"
+          style={{ background: 'linear-gradient(180deg, #ffffff, #e8e6ea)' }}
+        >
+          <svg viewBox="0 0 24 24" className="w-3 h-3 fill-void translate-x-[1px]">
+            <path d="M8 5v14l11-7z" />
+          </svg>
+        </button>
+        <button
+          onClick={() => setNextEpDismissed(true)}
+          aria-label="Dismiss"
+          className="flex-none w-6 h-6 rounded-md flex items-center justify-center text-muted hover:text-foreground hover:bg-white/[0.08] transition-colors"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3 h-3">
+            <path d="M18 6L6 18M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+    ) : null;
+
   return (
     <div className="page-enter relative min-h-screen bg-void text-foreground overflow-x-hidden font-sans selection:bg-violet selection:text-white">
-      {/* ── Immersive Multi-stop Gradient Backdrop ── */}
-      <div
-        className="absolute top-0 left-0 right-0 h-[85vh] z-0 bg-cover bg-[center_28%] pointer-events-none"
-        style={{
-          backgroundImage: `linear-gradient(180deg, rgba(13,13,13,0.05) 0%, rgba(13,13,13,0.5) 50%, #0D0D0D 100%), linear-gradient(90deg, rgba(13,13,13,0.9) 0%, rgba(13,13,13,0.25) 40%, transparent 65%), url('${backdropImageSrc}')`,
-        }}
-      />
+      {/* The detail view's chrome — backdrop, floating Back button, credits —
+          and the hero below it belong to browsing. While something is playing
+          the page is the play screen instead, so none of it renders and closing
+          the player brings it straight back. */}
+      {!showPlayer && (
+        <>
+        {/* ── Immersive Multi-stop Gradient Backdrop ── */}
+        <div
+          className="absolute top-0 left-0 right-0 h-[85vh] z-0 bg-cover bg-[center_28%] pointer-events-none"
+          style={{
+            backgroundImage: `linear-gradient(180deg, rgba(13,13,13,0.05) 0%, rgba(13,13,13,0.5) 50%, #0D0D0D 100%), linear-gradient(90deg, rgba(13,13,13,0.9) 0%, rgba(13,13,13,0.25) 40%, transparent 65%), url('${backdropImageSrc}')`,
+          }}
+        />
 
-      {/* ── Top Floating Back Button ── */}
-      <button
-        onClick={() => router.back()}
-        aria-label="Back"
-        className="absolute top-7 left-7 z-20 inline-flex items-center gap-2 px-4 py-2.5 bg-[#111111]/50 hover:bg-[#111111]/80 backdrop-blur-[10px] border border-glass-border hover:border-violet rounded-[10px] text-[13.5px] font-semibold text-foreground transition-all duration-200 cursor-pointer"
-      >
-        <svg
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.5"
-          className="w-[15px] h-[15px]"
+        {/* ── Top Floating Back Button ── */}
+        <button
+          onClick={() => router.back()}
+          aria-label="Back"
+          className="absolute top-7 left-7 z-20 inline-flex items-center gap-2 px-4 py-2.5 bg-[#111111]/50 hover:bg-[#111111]/80 backdrop-blur-[10px] border border-glass-border hover:border-violet rounded-[10px] text-[13.5px] font-semibold text-foreground transition-all duration-200 cursor-pointer"
         >
-          <path d="M15 18l-6-6 6-6" />
-        </svg>
-        Back
-      </button>
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            className="w-[15px] h-[15px]"
+          >
+            <path d="M15 18l-6-6 6-6" />
+          </svg>
+          Back
+        </button>
 
-      {/* ── Credits Block — Top Right, Apple-style Placement ── */}
-      <div className="hidden md:block absolute top-8 right-10 z-15 text-right max-w-[280px] text-[12.5px] leading-[1.75] text-muted pointer-events-auto">
-        {castList.length > 0 && (
-          <div>
-            {castList.slice(0, 3).map((actor, idx, arr) => (
-              <span key={actor}>
-                <Link
-                  href={`/search?q=${encodeURIComponent(actor)}`}
-                  className="text-foreground font-medium hover:text-violet-light transition-colors"
-                >
-                  {actor}
-                </Link>
-                {idx < arr.length - 1 && ', '}
-              </span>
-            ))}{' '}
-            <b className="text-muted-strong font-semibold ml-1.5 italic">Starring</b>
-          </div>
-        )}
-        {creatorOrDirector && (
-          <div className="mt-0.5">
-            <Link
-              href={`/search?q=${encodeURIComponent(creatorOrDirector)}`}
-              className="text-foreground font-medium hover:text-violet-light transition-colors"
-            >
-              {creatorOrDirector}
-            </Link>{' '}
-            <b className="text-muted-strong font-semibold ml-1.5 italic">
-              {isMovie ? 'Director' : 'Creator'}
-            </b>
-          </div>
-        )}
-      </div>
+        {/* ── Credits Block — Top Right, Apple-style Placement ── */}
+        <div className="hidden md:block absolute top-8 right-10 z-15 text-right max-w-[280px] text-[12.5px] leading-[1.75] text-muted pointer-events-auto">
+          {castList.length > 0 && (
+            <div>
+              {castList.slice(0, 3).map((actor, idx, arr) => (
+                <span key={actor}>
+                  <Link
+                    href={`/search?q=${encodeURIComponent(actor)}`}
+                    className="text-foreground font-medium hover:text-violet-light transition-colors"
+                  >
+                    {actor}
+                  </Link>
+                  {idx < arr.length - 1 && ', '}
+                </span>
+              ))}{' '}
+              <b className="text-muted-strong font-semibold ml-1.5 italic">Starring</b>
+            </div>
+          )}
+          {creatorOrDirector && (
+            <div className="mt-0.5">
+              <Link
+                href={`/search?q=${encodeURIComponent(creatorOrDirector)}`}
+                className="text-foreground font-medium hover:text-violet-light transition-colors"
+              >
+                {creatorOrDirector}
+              </Link>{' '}
+              <b className="text-muted-strong font-semibold ml-1.5 italic">
+                {isMovie ? 'Director' : 'Creator'}
+              </b>
+            </div>
+          )}
+        </div>
+        </>
+      )}
+
+      {/* ── Play screen ──
+          The title's own stage: the picture at full size with the source,
+          the embed toggles and the recovery paths as chrome on top of it
+          (see PlayerStage). It replaces the old player row that used to sit
+          inside the detail view — same controls, same behaviour, presented
+          the way a video app presents them. */}
+      {showPlayer && (
+        <PlayerStage
+          ref={playerRef}
+          title={detail.title}
+          context={stageContext}
+          ambientSrc={backdropImageSrc}
+          sources={EMBED_SOURCES.map((source) => ({ name: source.name, color: source.color }))}
+          activeSourceIndex={activeSourceIndex}
+          onSelectSource={handleSourceChange}
+          onClose={closePlayer}
+          onNextSource={handleNextSource}
+          showEmbedControls={!isOwnSource}
+          cleanActive={cleanActive}
+          blockPopups={blockPopups}
+          onToggleClean={() => {
+            setCleanMode(!cleanActive);
+            setIframeLoaded(false);
+            setIframeKey((k) => k + 1);
+          }}
+          onTogglePopups={() => {
+            setBlockPopups((v) => !v);
+            setIframeLoaded(false);
+            setIframeKey((k) => k + 1);
+          }}
+          loadError={loadError}
+          loading={!iframeLoaded && !loadError && !isOwnSource}
+          hintVisible={showSourceHint}
+          onDismissHint={() => setShowSourceHint(false)}
+          playing={isOwnSource ? playerPlaying : null}
+          notice={redirectBlockedNotice ? 'Redirect blocked — player restored' : null}
+          overlay={upNextCard}
+          player={playerSurface}
+        />
+      )}
 
       {/* ── Main Hero Content Layout ── */}
       <div className="relative z-10 max-w-[1140px] mx-auto px-6 md:px-10 pb-20">
-        <div className="min-h-[85vh] flex flex-col justify-end pb-20 md:pb-28">
-          <div className="flex flex-col md:flex-row gap-8 md:gap-[38px] items-start md:items-end w-full pt-28 md:pt-0">
-            {/* Poster */}
-            <div className="flex-none w-[130px] sm:w-[150px] md:w-[180px] aspect-[2/3] rounded-[14px] overflow-hidden shadow-[0_24px_56px_rgba(0,0,0,0.6)] border border-white/[0.08] relative bg-void-2">
-              <AppImage
-                src={detail.img}
-                alt={detail.alt || detail.title}
-                fill
-                className="object-cover"
-                priority
-              />
-            </div>
-
-            {/* Info Block */}
-            <div className="flex-1 pb-1 max-w-[680px]">
-              {/* Type label tracked-out caps, genres in italic — the "typographic mix" */}
-              <div className="flex items-center flex-wrap gap-2 mb-4">
-                <span className="text-[11px] font-bold tracking-[0.14em] text-violet-light uppercase">
-                  {isMovie ? 'Movie' : 'TV Show'}
-                </span>
-                {genresString && (
-                  <span className="text-[13.5px] italic font-normal text-muted-strong">
-                    {genresString}
-                  </span>
-                )}
-                {cert && (
-                  <span className="inline-flex items-center justify-center min-w-[20px] h-[16px] px-1 border border-muted/80 rounded-[3px] text-[9.5px] font-bold text-muted not-italic">
-                    {cert}
-                  </span>
-                )}
-              </div>
-
-              {/* Big, gradient-filled display title — the signature StreamVault flourish */}
-              <h1
-                className="font-display text-[38px] sm:text-[52px] md:text-[68px] font-extrabold tracking-[-0.02em] leading-[0.98] mb-[18px]"
-                style={{
-                  background:
-                    'linear-gradient(90deg, #ffffff 35%, var(--violet-light) 85%, var(--magenta) 110%)',
-                  WebkitBackgroundClip: 'text',
-                  WebkitTextFillColor: 'transparent',
-                  backgroundClip: 'text',
-                }}
-              >
-                {detail.title}
-              </h1>
-
-              {/* Overview with inline MORE/LESS button */}
-              <div className="mb-5 text-[14.5px] leading-[1.65] text-muted-strong">
-                <span className="inline">{displayedOverview}</span>
-                {canTruncate && (
-                  <button
-                    onClick={() => setIsOverviewExpanded(!isOverviewExpanded)}
-                    className="inline-flex items-center ml-1.5 px-2.5 py-0.5 bg-glass border border-glass-border hover:border-violet rounded-full text-[11px] font-bold tracking-[0.02em] text-foreground cursor-pointer align-middle transition-colors"
-                  >
-                    {isOverviewExpanded ? 'LESS' : 'MORE'}
-                  </button>
-                )}
-              </div>
-
-              {/* Chip strip */}
-              <div className="flex flex-wrap items-center gap-2.5 text-[13px] text-muted font-medium mb-[26px]">
-                <span className="text-gold font-bold flex items-center gap-1">
-                  <svg viewBox="0 0 24 24" className="w-3 h-3 fill-gold">
-                    <path d="M12 2l2.9 6.6 7.1.6-5.4 4.7 1.6 7-6.2-3.9-6.2 3.9 1.6-7L2 9.2l7.1-.6z" />
-                  </svg>
-                  {cleanRating}
-                </span>
-                <span className="w-[3px] h-[3px] rounded-full bg-muted flex-none" />
-                {releaseYear && (
-                  <>
-                    <span>{releaseYear}</span>
-                    <span className="w-[3px] h-[3px] rounded-full bg-muted flex-none" />
-                  </>
-                )}
-                {extraInfo && (
-                  <>
-                    <span>{extraInfo}</span>
-                    <span className="w-[3px] h-[3px] rounded-full bg-muted flex-none" />
-                  </>
-                )}
-                <span className="text-[10.5px] font-bold tracking-[0.02em] px-1.5 py-0.5 border border-glass-border rounded text-muted-strong uppercase">
-                  HD
-                </span>
-              </div>
-
-              {/* Action Buttons */}
-              <div className="flex items-center gap-3 pt-2">
-                {/* Primary Watch Button */}
-                <button
-                  onClick={() => handleWatchNow(lastWatched?.season, lastWatched?.episode)}
-                  className="flex items-center gap-2 px-6 py-3 rounded-xl bg-white text-black font-bold text-sm hover:bg-zinc-200 transition-all shadow-lg cursor-pointer active:scale-95"
-                >
-                  <Play className="w-4 h-4 fill-current" />
-                  {showPlayer
-                    ? 'Resume Watching'
-                    : lastWatched?.season && lastWatched?.episode
-                    ? `Resume S${lastWatched.season} E${lastWatched.episode}`
-                    : lastWatched?.progress && lastWatched?.duration && lastWatched.duration > 0
-                    ? `Resume (${Math.max(1, Math.round((lastWatched.duration - lastWatched.progress) / 60))}m left)`
-                    : lastWatched
-                    ? 'Resume Watching'
-                    : 'Watch Now'}
-                </button>
-
-                <StreamtapeDownloadButton
-                  tmdbId={mediaId}
-                  mediaType={mediaType}
-                  season={selectedSeason}
-                  episode={selectedEpisode}
+        {/* The detail view's hero (poster, title, actions) — hidden while the
+            stage above has the screen. */}
+        {!showPlayer && (
+          <div className="min-h-[85vh] flex flex-col justify-end pb-20 md:pb-28">
+            <div className="flex flex-col md:flex-row gap-8 md:gap-[38px] items-start md:items-end w-full pt-28 md:pt-0">
+              {/* Poster */}
+              <div className="flex-none w-[130px] sm:w-[150px] md:w-[180px] aspect-[2/3] rounded-[14px] overflow-hidden shadow-[0_24px_56px_rgba(0,0,0,0.6)] border border-white/[0.08] relative bg-void-2">
+                <AppImage
+                  src={detail.img}
+                  alt={detail.alt || detail.title}
+                  fill
+                  className="object-cover"
+                  priority
                 />
-
-                {/* Favorite Button */}
-                <button
-                  onClick={handleFavorite}
-                  disabled={favLoading}
-                  className={`p-3 rounded-xl border transition-all flex items-center justify-center cursor-pointer ${
-                    isFavorite
-                      ? 'bg-rose-500/20 border-rose-500 text-rose-500 shadow-lg shadow-rose-500/20'
-                      : 'bg-zinc-900/80 border-zinc-700/80 text-zinc-300 hover:text-white hover:bg-zinc-800'
-                  }`}
-                  title={isFavorite ? 'Remove from Favorites' : 'Add to Favorites'}
-                  aria-label={isFavorite ? 'Remove from Favorites' : 'Add to Favorites'}
-                >
-                  <Heart className={`w-5 h-5 ${isFavorite ? 'fill-current' : ''}`} />
-                </button>
-
-                {/* Watchlist Button */}
-                <button
-                  onClick={handleWatchlist}
-                  disabled={watchLoading}
-                  className={`p-3 rounded-xl border transition-all flex items-center justify-center cursor-pointer ${
-                    isInWatchlist
-                      ? 'bg-violet-600/20 border-violet-500 text-violet-400 shadow-lg shadow-violet-600/20'
-                      : 'bg-zinc-900/80 border-zinc-700/80 text-zinc-300 hover:text-white hover:bg-zinc-800'
-                  }`}
-                  title={isInWatchlist ? 'Remove from Watchlist' : 'Add to Watchlist'}
-                  aria-label={isInWatchlist ? 'Remove from Watchlist' : 'Add to Watchlist'}
-                >
-                  {isInWatchlist ? <Check className="w-5 h-5" /> : <Plus className="w-5 h-5" />}
-                </button>
               </div>
-            </div>
-          </div>
-        </div>
 
-        {/* ── Streaming Player Section ── */}
-        {showPlayer && (
-          <div ref={playerRef} className="mt-14 pt-8 border-t border-glass-border">
-            {/* Header row */}
-            <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
-              <h2 className="font-display text-base md:text-lg font-semibold text-foreground tracking-tight">
-                Now streaming
-              </h2>
-              <button
-                onClick={() => {
-                  setShowPlayer(false);
-                  setActiveSourceIndex(0);
-                  setLoadError(false);
-                }}
-                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-white/[0.05] hover:bg-white/[0.1] border border-glass-border text-muted hover:text-foreground transition-all duration-200 cursor-pointer"
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5">
-                  <path d="M18 6L6 18M6 6l12 12" />
-                </svg>
-                Close player
-              </button>
-            </div>
-
-            {/* Source selector tabs */}
-            <div className="flex items-center gap-2 mb-4 flex-wrap">
-              <span className="text-xs font-semibold uppercase tracking-wider text-muted mr-1">
-                Source
-              </span>
-              {EMBED_SOURCES.map((src, i) => (
-                <button
-                  key={src.name}
-                  onClick={() => handleSourceChange(i)}
-                  className={`px-3.5 py-1.5 rounded-lg font-medium text-xs transition-all cursor-pointer ${
-                    activeSourceIndex === i
-                      ? 'bg-foreground text-void'
-                      : 'bg-void-2 hover:bg-void-3 border border-glass-border text-muted hover:text-foreground'
-                  }`}
-                >
-                  {src.name}
-                </button>
-              ))}
-              <button
-                onClick={() => {
-                  setCleanMode((v) => !v);
-                  setIframeLoaded(false);
-                  setIframeKey((k) => k + 1);
-                }}
-                title="Loads the player through our server with ad scripts removed. Turn off if the video won't play."
-                className={`ml-auto px-3.5 py-1.5 rounded-lg font-medium text-xs transition-all cursor-pointer border ${
-                  cleanMode
-                    ? 'bg-violet/20 border-violet/50 text-violet-light'
-                    : 'bg-void-2 border-glass-border text-muted hover:text-foreground'
-                }`}
-              >
-                Clean mode: {cleanMode ? 'On' : 'Off'}
-              </button>
-              <button
-                onClick={() => {
-                  setBlockPopups((v) => !v);
-                  setIframeLoaded(false);
-                  setIframeKey((k) => k + 1);
-                }}
-                title="Blocks popups and redirects from the player. Turn off if the video won't play."
-                className={`px-3.5 py-1.5 rounded-lg font-medium text-xs transition-all cursor-pointer border ${
-                  blockPopups
-                    ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
-                    : 'bg-void-2 border-glass-border text-muted hover:text-foreground'
-                }`}
-              >
-                Popup blocker: {blockPopups ? 'On' : 'Off'}
-              </button>
-            </div>
-
-            {/* Load error banner */}
-            {loadError && (
-              <div className="flex items-center justify-between px-4 py-3 rounded-xl mb-4 bg-rose-500/10 border border-rose-500/30">
-                <div className="flex items-center gap-2 text-rose-400 text-xs font-semibold">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5 flex-none">
-                    <circle cx="12" cy="12" r="10" /><path d="M12 8v5M12 16h.01" />
-                  </svg>
-                  <span>Source encountered a loading issue. Try switching to another source.</span>
+              {/* Info Block */}
+              <div className="flex-1 pb-1 max-w-[680px]">
+                {/* Type label tracked-out caps, genres in italic — the "typographic mix" */}
+                <div className="flex items-center flex-wrap gap-2 mb-4">
+                  <span className="text-[11px] font-bold tracking-[0.14em] text-violet-light uppercase">
+                    {isMovie ? 'Movie' : 'TV Show'}
+                  </span>
+                  {genresString && (
+                    <span className="text-[13.5px] italic font-normal text-muted-strong">
+                      {genresString}
+                    </span>
+                  )}
+                  {cert && (
+                    <span className="inline-flex items-center justify-center min-w-[20px] h-[16px] px-1 border border-muted/80 rounded-[3px] text-[9.5px] font-bold text-muted not-italic">
+                      {cert}
+                    </span>
+                  )}
                 </div>
-                <button
-                  onClick={handleNextSource}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-violet/30 border border-violet/50 text-white hover:bg-violet/50 transition-all cursor-pointer"
+
+                {/* Big, gradient-filled display title — the signature StreamVault flourish */}
+                <h1
+                  className="font-display text-[38px] sm:text-[52px] md:text-[68px] font-extrabold tracking-[-0.02em] leading-[0.98] mb-[18px]"
+                  style={{
+                    background:
+                      'linear-gradient(90deg, #ffffff 35%, var(--violet-light) 85%, var(--magenta) 110%)',
+                    WebkitBackgroundClip: 'text',
+                    WebkitTextFillColor: 'transparent',
+                    backgroundClip: 'text',
+                  }}
                 >
-                  Try next source
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="w-3 h-3"><path d="M9 18l6-6-6-6" /></svg>
-                </button>
+                  {detail.title}
+                </h1>
+
+                {/* Overview with inline MORE/LESS button */}
+                <div className="mb-5 text-[14.5px] leading-[1.65] text-muted-strong">
+                  <span className="inline">{displayedOverview}</span>
+                  {canTruncate && (
+                    <button
+                      onClick={() => setIsOverviewExpanded(!isOverviewExpanded)}
+                      className="inline-flex items-center ml-1.5 px-2.5 py-0.5 bg-glass border border-glass-border hover:border-violet rounded-full text-[11px] font-bold tracking-[0.02em] text-foreground cursor-pointer align-middle transition-colors"
+                    >
+                      {isOverviewExpanded ? 'LESS' : 'MORE'}
+                    </button>
+                  )}
+                </div>
+
+                {/* Chip strip */}
+                <div className="flex flex-wrap items-center gap-2.5 text-[13px] text-muted font-medium mb-[26px]">
+                  <span className="text-gold font-bold flex items-center gap-1">
+                    <svg viewBox="0 0 24 24" className="w-3 h-3 fill-gold">
+                      <path d="M12 2l2.9 6.6 7.1.6-5.4 4.7 1.6 7-6.2-3.9-6.2 3.9 1.6-7L2 9.2l7.1-.6z" />
+                    </svg>
+                    {cleanRating}
+                  </span>
+                  <span className="w-[3px] h-[3px] rounded-full bg-muted flex-none" />
+                  {releaseYear && (
+                    <>
+                      <span>{releaseYear}</span>
+                      <span className="w-[3px] h-[3px] rounded-full bg-muted flex-none" />
+                    </>
+                  )}
+                  {extraInfo && (
+                    <>
+                      <span>{extraInfo}</span>
+                      <span className="w-[3px] h-[3px] rounded-full bg-muted flex-none" />
+                    </>
+                  )}
+                  <span className="text-[10.5px] font-bold tracking-[0.02em] px-1.5 py-0.5 border border-glass-border rounded text-muted-strong uppercase">
+                    HD
+                  </span>
+                </div>
+
+                {/* Action Buttons */}
+                <div className="flex items-center gap-3 pt-2">
+                  {/* Primary Watch Button */}
+                  <button
+                    onClick={() => handleWatchNow(lastWatched?.season, lastWatched?.episode)}
+                    className="flex items-center gap-2 px-6 py-3 rounded-xl bg-white text-black font-bold text-sm hover:bg-zinc-200 transition-all shadow-lg cursor-pointer active:scale-95"
+                  >
+                    <Play className="w-4 h-4 fill-current" />
+                    {showPlayer
+                      ? 'Resume Watching'
+                      : lastWatched?.season && lastWatched?.episode
+                      ? `Resume S${lastWatched.season} E${lastWatched.episode}`
+                      : lastWatched?.progress && lastWatched?.duration && lastWatched.duration > 0
+                      ? `Resume (${Math.max(1, Math.round((lastWatched.duration - lastWatched.progress) / 60))}m left)`
+                      : lastWatched
+                      ? 'Resume Watching'
+                      : 'Watch Now'}
+                  </button>
+
+                  <StreamtapeDownloadButton
+                    tmdbId={mediaId}
+                    mediaType={mediaType}
+                    season={selectedSeason}
+                    episode={selectedEpisode}
+                  />
+
+                  {/* Favorite Button */}
+                  <button
+                    onClick={handleFavorite}
+                    disabled={favLoading}
+                    className={`p-3 rounded-xl border transition-all flex items-center justify-center cursor-pointer ${
+                      isFavorite
+                        ? 'bg-rose-500/20 border-rose-500 text-rose-500 shadow-lg shadow-rose-500/20'
+                        : 'bg-zinc-900/80 border-zinc-700/80 text-zinc-300 hover:text-white hover:bg-zinc-800'
+                    }`}
+                    title={isFavorite ? 'Remove from Favorites' : 'Add to Favorites'}
+                    aria-label={isFavorite ? 'Remove from Favorites' : 'Add to Favorites'}
+                  >
+                    <Heart className={`w-5 h-5 ${isFavorite ? 'fill-current' : ''}`} />
+                  </button>
+
+                  {/* Watchlist Button */}
+                  <button
+                    onClick={handleWatchlist}
+                    disabled={watchLoading}
+                    className={`p-3 rounded-xl border transition-all flex items-center justify-center cursor-pointer ${
+                      isInWatchlist
+                        ? 'bg-violet-600/20 border-violet-500 text-violet-400 shadow-lg shadow-violet-600/20'
+                        : 'bg-zinc-900/80 border-zinc-700/80 text-zinc-300 hover:text-white hover:bg-zinc-800'
+                    }`}
+                    title={isInWatchlist ? 'Remove from Watchlist' : 'Add to Watchlist'}
+                    aria-label={isInWatchlist ? 'Remove from Watchlist' : 'Add to Watchlist'}
+                  >
+                    {isInWatchlist ? <Check className="w-5 h-5" /> : <Plus className="w-5 h-5" />}
+                  </button>
+                </div>
               </div>
-            )}
-
-            {/* Iframe player container */}
-            <div className="w-full rounded-2xl overflow-hidden relative aspect-video bg-black border border-glass-border shadow-[0_8px_40px_rgba(123,47,255,0.15)]">
-              {!iframeLoaded && !loadError && (
-                <div className="absolute inset-0 z-10 flex items-center justify-center bg-void-2">
-                  <div className="flex flex-col items-center gap-3">
-                    <div className="w-8 h-8 rounded-full border-2 border-t-transparent border-violet animate-spin" />
-                    <p className="text-[11px] text-muted font-medium tracking-wider uppercase">
-                      Connecting to Source {activeSourceIndex + 1}...
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              {/* Proactive hint */}
-              {showSourceHint && (
-                <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-3 bg-void-2/90 backdrop-blur-md pl-4 pr-2 py-2 rounded-full border border-glass-border shadow-[0_8px_24px_rgba(0,0,0,0.4)]">
-                  <p className="text-[12px] text-muted whitespace-nowrap">Nothing playing? Try another source or turn the popup blocker off.</p>
-                  <button
-                    onClick={() => {
-                      handleNextSource();
-                      setShowSourceHint(false);
-                    }}
-                    className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-[11.5px] font-semibold text-void hover:opacity-90 transition-opacity"
-                    style={{ background: 'linear-gradient(180deg, #ffffff, #e8e6ea)' }}
-                  >
-                    Try next source
-                  </button>
-                  <button
-                    onClick={() => setShowSourceHint(false)}
-                    aria-label="Dismiss"
-                    className="w-5 h-5 rounded-full flex items-center justify-center text-muted hover:text-foreground hover:bg-white/[0.08] transition-colors"
-                  >
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-2.5 h-2.5">
-                      <path d="M18 6L6 18M6 6l12 12" />
-                    </svg>
-                  </button>
-                </div>
-              )}
-
-              {redirectBlockedNotice && (
-                <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 px-4 py-2 rounded-full bg-void-2/90 border border-glass-border text-[12px] text-foreground">
-                  Redirect blocked — player restored
-                </div>
-              )}
-
-              <iframe
-                ref={iframeRef}
-                key={`${iframeKey}-${activeSourceIndex}-${selectedSeason}-${selectedEpisode}-${blockPopups}-${cleanMode}-${recoverKey}`}
-                src={getEmbedUrl()}
-                className="w-full h-full"
-                allowFullScreen
-                {...(cleanMode
-                  ? { sandbox: CLEAN_MODE_SANDBOX } // no allow-same-origin: embed code can't touch our origin
-                  : blockPopups && EMBED_SOURCES[activeSourceIndex].sandbox !== false
-                    ? { sandbox: EMBED_SOURCES[activeSourceIndex].sandbox || POPUP_BLOCK_SANDBOX }
-                    : {})}
-                {...(EMBED_SOURCES[activeSourceIndex].allow !== undefined
-                  ? { allow: EMBED_SOURCES[activeSourceIndex].allow }
-                  : { allow: DEFAULT_ALLOW })}
-                {...(EMBED_SOURCES[activeSourceIndex].referrerPolicy !== undefined
-                  ? { referrerPolicy: EMBED_SOURCES[activeSourceIndex].referrerPolicy }
-                  : {})}
-                style={{ border: 'none', display: 'block', position: 'relative', zIndex: 0 }}
-                title={`${detail.title} - Source ${activeSourceIndex + 1}`}
-                onLoad={handleFrameLoad}
-                onError={handleIframeError}
-              />
-
-              {/* ── Up Next overlay (TV only, manual) ── */}
-              {nextEp && iframeLoaded && !nextEpDismissed && (
-                <div className="absolute bottom-4 right-4 z-20 w-[280px] flex items-center gap-3 bg-void-2/85 backdrop-blur-md p-2.5 rounded-xl border border-glass-border shadow-[0_12px_32px_rgba(0,0,0,0.5)]">
-                  <div className="relative flex-none w-16 aspect-video rounded-md overflow-hidden bg-void-3">
-                    {nextEp.ep.stillImg ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={nextEp.ep.stillImg}
-                        alt={nextEp.ep.name}
-                        className="w-full h-full object-cover"
-                      />
-                    ) : null}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-[9.5px] font-semibold uppercase tracking-wider text-violet-light mb-0.5">
-                      Up next · S{nextEp.season}E{nextEp.ep.episodeNumber}
-                    </p>
-                    <p className="font-display text-[12.5px] font-semibold text-foreground leading-tight line-clamp-1">
-                      {nextEp.ep.name}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => playEpisode(nextEp.season, nextEp.ep.episodeNumber)}
-                    aria-label="Play next episode"
-                    className="flex-none w-8 h-8 rounded-lg flex items-center justify-center hover:opacity-90 active:scale-95 transition-all duration-150"
-                    style={{ background: 'linear-gradient(180deg, #ffffff, #e8e6ea)' }}
-                  >
-                    <svg viewBox="0 0 24 24" className="w-3 h-3 fill-void translate-x-[1px]">
-                      <path d="M8 5v14l11-7z" />
-                    </svg>
-                  </button>
-                  <button
-                    onClick={() => setNextEpDismissed(true)}
-                    aria-label="Dismiss"
-                    className="flex-none w-6 h-6 rounded-md flex items-center justify-center text-muted hover:text-foreground hover:bg-white/[0.08] transition-colors"
-                  >
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3 h-3">
-                      <path d="M18 6L6 18M6 6l12 12" />
-                    </svg>
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* Source info + controls */}
-            <div className="mt-3 flex items-center justify-between flex-wrap gap-2 bg-void-2/60 backdrop-blur-md p-3 rounded-xl border border-glass-border text-xs text-muted">
-              <p>
-                Currently streaming from{' '}
-                <span className="text-violet-light font-semibold">
-                  {EMBED_SOURCES[activeSourceIndex].name}
-                </span>
-                {!isMovie ? ` · S${selectedSeason}E${selectedEpisode}` : ''}
-              </p>
-              <button
-                onClick={handleNextSource}
-                disabled={activeSourceIndex === EMBED_SOURCES.length - 1}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-void-3 hover:bg-zinc-800 disabled:opacity-40 text-foreground rounded-lg font-medium text-xs transition-colors cursor-pointer border border-glass-border"
-              >
-                Try next source
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="w-3 h-3"><path d="M9 18l6-6-6-6" /></svg>
-              </button>
             </div>
           </div>
         )}
