@@ -95,24 +95,21 @@ const EMBED_SOURCES: EmbedSource[] = [
         : `https://moviesapi.to/tv/${id}/${s ?? 1}/${e ?? 1}`,
   },
   {
+    // Resolved server-side (server 3) and played in our own player. Its embed
+    // ships a popup/overlay ad SDK (/tc/ff-tag.php + /tc/ff-prime.php, the
+    // latter resetting the vendor's frequency caps on every click, so its ads
+    // come back) that clean mode could never remove — a proxied copy of that
+    // player cannot run. Playing its streams natively sidesteps the player
+    // entirely: the bundle resolves most of its servers through an aggregator
+    // that answers plain HLS links (see src/lib/server/directSources/vidcore.ts).
     name: 'VidCore',
     color: '#A78BFA',
-    referrerPolicy: DEFAULT_REFERRER_POLICY,
-    // NOTE: its player ships a popup/overlay ad SDK (/tc/ff-tag.php +
-    // /tc/ff-prime.php, the latter resetting the vendor's frequency caps on
-    // every click, so its ads come back) that only clean mode removes. Clean
-    // mode is still off by default: the proxy now serves this player without a
-    // <base> so it boots, but it has not been verified to *play* that way yet
-    // — see AGENTS.md.
-    getUrl: (id, type, s, e) => {
-      const params = new URLSearchParams({
-        theme: '7B2FFF',
-        autoplay: 'true',
-      });
-      return type === 'movie'
-        ? `https://vidcore.org/embed/movie/${id}?${params.toString()}`
-        : `https://vidcore.org/embed/tv/${id}/${s ?? 1}/${e ?? 1}?${params.toString()}`;
-    },
+    own: true,
+    server: 3,
+    getUrl: (id, type, s, e) =>
+      type === 'movie'
+        ? `/embed/movie/${id}?server=3`
+        : `/embed/tv/${id}?season=${s ?? 1}&episode=${e ?? 1}&server=3`,
   },
   {
     // Confirmed against vidcore.io's own docs — a different service from
@@ -147,21 +144,21 @@ const EMBED_SOURCES: EmbedSource[] = [
     },
   },
   {
+    // Resolved server-side (server 4) and played in our own player: the embed
+    // could be neither sandboxed nor proxied — this player family refuses any
+    // sandboxed frame, and a proxied copy of its player is referrer-locked — so
+    // embedding it was the one way to keep its ad redirects, which nothing
+    // could block. Its own stream links need no such protection: /api/stream/direct
+    // walks the same chain the player does (vs_src.php → player page → apiToken
+    // → encrypted stream list → per-host token) and hands back a plain HLS link.
     name: 'VidSrc',
     color: '#38BDF8',
-    referrerPolicy: DEFAULT_REFERRER_POLICY,
-    // Never sandboxed: this player family refuses to run in ANY sandboxed
-    // frame (vidsrc.sh, vidsrc.to, vidsrc.me, vidsrc.su and the vsembed.ru
-    // player each serve their own "can't be embedded in a sandboxed frame"
-    // page). Proxying a copy is no alternative either — the real player token
-    // is referrer-locked to vidsrc.sh and answers 403 "Expired" for any other
-    // referrer. So this source plays unprotected and its ad redirects cannot
-    // be blocked; see AGENTS.md.
-    sandbox: false,
+    own: true,
+    server: 4,
     getUrl: (id, type, s, e) =>
       type === 'movie'
-        ? `https://vidsrc.sh/embed/movie/${id}`
-        : `https://vidsrc.sh/embed/tv/${id}/${s ?? 1}/${e ?? 1}`,
+        ? `/embed/movie/${id}?server=4`
+        : `/embed/tv/${id}?season=${s ?? 1}&episode=${e ?? 1}&server=4`,
   },
 ];
 

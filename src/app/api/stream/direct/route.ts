@@ -1,11 +1,14 @@
 import { NextResponse } from 'next/server';
+import { resolveVidCore } from '@/lib/server/directSources/vidcore';
+import { resolveVidSrc } from '@/lib/server/directSources/vidsrc';
+import { rememberStreamHosts } from '@/lib/server/streamProxyHosts';
+import type { DirectSourceContext, DirectSourceStream } from '@/lib/server/directSources/types';
 
 // Direct stream links.
 //
-// Resolves a TMDB id to the actual playable video file behind one of two
-// independent sources. Both speak the same player API, but their catalogs are
-// separate — which is the point: a title one of them does not carry is usually
-// on the other.
+// Resolves a TMDB id to the actual playable video file behind one of four
+// independent sources, so playback happens in our own player instead of a
+// third-party embed (and therefore without their ad scripts and popups).
 //
 //   server 1 (default) — moviesapi.to, upstream "vidora"
 //     GET https://moviesapi.to/api/vidora/v1/movie/<tmdb id>
@@ -15,9 +18,23 @@ import { NextResponse } from 'next/server';
 //     GET https://vidsrc.pm/api/vidora/v1/movie/<tmdb id>
 //     GET https://vidsrc.pm/api/vidora/v1/tv/<tmdb id>/<season>/<episode>
 //
-// Each needs an `x-player-key` header. That key is a constant baked into the
-// site's own player bundle (moviesapi `/assets/index-*.js`, vidsrc.pm
-// `/assets/main-*.js`) — re-extract it there if one ever starts answering 401.
+//   server 3 — VidCore (vidcore.org)
+//   server 4 — VidSrc (vidsrc.sh)
+//     Both resolve through their own chain; see src/lib/server/directSources/.
+//
+// Servers 1 and 2 speak the same player API with a different catalogue each,
+// which is the point: a title one of them does not carry is usually on the
+// other — so without `server` the first is tried and the second covers its
+// gaps. Servers 3 and 4 are opt-in (`server=3|4`): each walks a multi-request
+// chain, so folding them into the default path would slow down every play on
+// the off chance one of them has the title. They are the tabs to switch to when
+// the default pair has nothing, and between them they carry titles neither
+// vidora catalogue does (e.g. TV 1402, The Walking Dead).
+//
+// Each needs an `x-player-key` header for the vidora family. That key is a
+// constant baked into the site's own player bundle (moviesapi `/assets/index-*.js`,
+// vidsrc.pm `/assets/main-*.js`) — re-extract it there if one ever starts
+// answering 401.
 //
 // The response carries `sources[0].url`, an HLS master playlist. That CDN only
 // answers when the request carries its own site's `Referer` (403 without it),
@@ -26,23 +43,21 @@ import { NextResponse } from 'next/server';
 // rewrites the playlist so its segments keep working. Give the proxy URL to a
 // player (hls.js, Safari's native HLS, …).
 //
-// `server` picks one explicitly (1 | 2). Without it server 1 is tried first and
-// server 2 is used when the first has nothing for the title, so the default
-// covers both catalogs.
+// `server` picks one explicitly (1 | 2 | 3 | 4).
 //
 // CORS is open, so an external page/iframe can call this directly.
 
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
-type StreamSource = {
+type VidoraSource = {
   id: 1 | 2;
   name: string;
   host: string;
   playerKey: string;
 };
 
-const SOURCES: StreamSource[] = [
+const VIDORA_SOURCES: VidoraSource[] = [
   {
     id: 1,
     name: 'moviesapi',
@@ -55,6 +70,24 @@ const SOURCES: StreamSource[] = [
     host: 'https://vidsrc.pm',
     playerKey: 'f3b72e73c80c9a996574379798703796a1936efa3516a7105cb0e43048b46b5a',
   },
+];
+
+type Source = {
+  id: 1 | 2 | 3 | 4;
+  name: string;
+  fallback: boolean;
+  resolve: (ctx: DirectSourceContext) => Promise<DirectSourceStream | null>;
+};
+
+const SOURCES: Source[] = [
+  ...VIDORA_SOURCES.map((source) => ({
+    id: source.id,
+    name: source.name,
+    fallback: true,
+    resolve: (ctx: DirectSourceContext) => resolveWithVidora(source, ctx),
+  })),
+  { id: 3, name: 'vidcore', fallback: false, resolve: resolveVidCore },
+  { id: 4, name: 'vidsrc.sh', fallback: false, resolve: resolveVidSrc },
 ];
 
 const CORS_HEADERS = {
@@ -72,14 +105,17 @@ type PlayerPayload = {
   tracks?: { label?: string; file?: string }[];
 };
 
-// One resolve attempt against one source. `noStream` distinguishes "this source
-// does not carry the title" (safe to fall back to the other one) from "the
-// source itself broke" (also worth trying the other one, but reported
-// differently when neither works).
-async function resolveWithSource(
-  source: StreamSource,
-  playerPath: string
-): Promise<{ payload: PlayerPayload; status: number; noStream: boolean }> {
+// One resolve attempt against one vidora source. A source that answers without
+// a stream (`null`) simply does not carry the title — safe to fall back from.
+async function resolveWithVidora(
+  source: VidoraSource,
+  ctx: DirectSourceContext
+): Promise<DirectSourceStream | null> {
+  const playerPath =
+    ctx.type === 'tv'
+      ? `/v1/tv/${ctx.tmdbId}/${ctx.season}/${ctx.episode}`
+      : `/v1/movie/${ctx.tmdbId}`;
+
   const res = await fetch(`${source.host}/api/vidora${playerPath}`, {
     headers: {
       'User-Agent': USER_AGENT,
@@ -91,13 +127,19 @@ async function resolveWithSource(
     signal: AbortSignal.timeout(15000),
   });
 
-  if (!res.ok) {
-    return { payload: {}, status: res.status, noStream: true };
-  }
+  if (!res.ok) return null;
 
   const payload = (await res.json().catch(() => null)) as PlayerPayload | null;
   const url = payload?.sources?.[0]?.url;
-  return { payload: payload ?? {}, status: url ? 200 : 404, noStream: !url };
+  if (!url) return null;
+
+  return {
+    provider: payload?.sources?.[0]?.source ?? source.name,
+    title: payload?.title ?? null,
+    url,
+    referer: `${source.host}/`,
+    tracks: payload?.sources?.[0]?.tracks ?? payload?.tracks,
+  };
 }
 
 export async function GET(request: Request) {
@@ -118,7 +160,12 @@ export async function GET(request: Request) {
     );
   }
 
-  const playerPath = type === 'tv' ? `/v1/tv/${tmdb_id}/${season}/${episode}` : `/v1/movie/${tmdb_id}`;
+  const ctx: DirectSourceContext = {
+    type: type as 'movie' | 'tv',
+    tmdbId: tmdb_id,
+    season,
+    episode,
+  };
 
   // Proxy links come back relative (they work for anything served from this
   // app). A caller on another origin passes `base=https://its-own-app.example`
@@ -142,38 +189,40 @@ export async function GET(request: Request) {
       referer
     )}`;
 
-  // An explicit `server` pins one source; without it the second one covers the
-  // gaps in the first.
+  // An explicit `server` pins one source; without it only the sources that
+  // carry a fallback are tried (see SOURCES).
   const pinned = SOURCES.find((source) => String(source.id) === serverParam);
-  const candidates = pinned ? [pinned] : SOURCES;
+  const candidates = pinned ? [pinned] : SOURCES.filter((source) => source.fallback);
 
-  let chosen: StreamSource | null = null;
-  let payload: PlayerPayload = {};
-  let lastStatus = 502;
+  let chosen: Source | null = null;
+  let stream: DirectSourceStream | null = null;
+  let sourceAnswered = false;
 
   for (const source of candidates) {
     try {
-      const attempt = await resolveWithSource(source, playerPath);
-      lastStatus = attempt.status;
-      if (!attempt.noStream) {
+      const resolved = await source.resolve(ctx);
+      if (resolved) {
         chosen = source;
-        payload = attempt.payload;
+        stream = resolved;
+        sourceAnswered = true;
         break;
       }
+      // A vidora source that answers 200/404 without a stream proves it is
+      // reachable and simply does not carry the title (see the `reason` below).
+      sourceAnswered = true;
     } catch (err) {
       console.error(`[Direct Stream] ${source.name} resolve failed:`, err);
-      lastStatus = 502;
     }
   }
 
-  if (!chosen) {
+  if (!chosen || !stream) {
     // Always answer 404, never a 5xx. A 5xx from this route is swallowed by the
     // preview's own proxy, which substitutes its "Preview starting…" placeholder
     // page for it — the player's `res.json()` then throws on that HTML and
     // reports a bogus network failure ("Could not reach the stream service.")
-    // instead of the real reason. `reason` still separates a title nobody
-    // carries from a source that failed, for callers that care.
-    const unreachable = lastStatus !== 404;
+    // instead of the real reason. `reason` still separates "no source carries
+    // the title" from "the source itself did not answer", for callers that care.
+    const unreachable = !sourceAnswered;
     return NextResponse.json(
       {
         success: false,
@@ -184,10 +233,8 @@ export async function GET(request: Request) {
     );
   }
 
-  const streamUrl = payload.sources?.[0]?.url as string;
-  const referer = `${chosen.host}/`;
-
-  const tracks = (payload.sources?.[0]?.tracks ?? payload.tracks ?? [])
+  const { url: streamUrl, referer } = stream;
+  const tracks = (stream.tracks ?? [])
     .filter((track) => track?.file)
     .map((track) => ({
       label: track.label ?? null,
@@ -195,14 +242,19 @@ export async function GET(request: Request) {
       proxy: proxiedUrl(referer, track.file as string),
     }));
 
+  // The proxy only fetches hosts it already knows (a static list plus everything
+  // this app has resolved or served) — the link we are about to hand out is one
+  // of them.
+  rememberStreamHosts([streamUrl, ...tracks.map((track) => track.url)]);
+
   return NextResponse.json(
     {
       success: true,
       tmdb_id,
       type,
-      title: payload.title ?? null,
+      title: stream.title,
       server: chosen.id,
-      provider: payload.sources?.[0]?.source ?? chosen.name,
+      provider: stream.provider,
       season: type === 'tv' ? season : undefined,
       episode: type === 'tv' ? episode : undefined,
       stream: {

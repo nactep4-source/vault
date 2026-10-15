@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { isRememberedStreamHost, rememberStreamHosts } from '@/lib/server/streamProxyHosts';
 
 // Upstream budgets — see the fetch below for why they are split this way.
 // Measured on `bx.netrocdn.site`: headers after 3.3 s, body then arrives over
@@ -52,7 +53,12 @@ export async function GET(request: Request) {
     'hd4u.sbs',
   ];
 
+  // The VidCore/VidSrc sources rotate their media hosts per resolve and publish
+  // segment paths with no extension, so they can't be listed here — a host
+  // becomes fetchable once this app has resolved or served it (see
+  // streamProxyHosts.ts). Everything else still has to match the rules below.
   const domainAllowed =
+    isRememberedStreamHost(parsedUrl.hostname) ||
     streamHosts.some(
       (d) => parsedUrl.hostname === d || parsedUrl.hostname.endsWith('.' + d)
     ) ||
@@ -175,10 +181,18 @@ export async function GET(request: Request) {
         }
       }
       let text = new TextDecoder().decode(Buffer.concat(chunks));
-      const toProxy = (target: string) =>
-        `/api/stream/proxy?url=${encodeURIComponent(target)}&referer=${encodeURIComponent(
+      // Every link rewritten below is a segment of this playlist, i.e. a URL the
+      // player is about to ask this proxy for. Remembering those hosts is what
+      // lets a playlist point at a shard we had never seen (VidCore's zenoak
+      // playlists live on `moon.zenoak.top` but their segments sit on
+      // `ultramoss.top`).
+      const segments: string[] = [];
+      const toProxy = (target: string) => {
+        segments.push(target);
+        return `/api/stream/proxy?url=${encodeURIComponent(target)}&referer=${encodeURIComponent(
           referer
         )}`;
+      };
       // Resolve against the playlist URL the way a player would: the second
       // source's parts are root-relative (`/segment?url=…`) and carry their
       // access grant in the query, so joining naively would produce `//segment`
@@ -197,6 +211,7 @@ export async function GET(request: Request) {
       text = text.replace(/^(?!#)(\S+)$/gm, (line) => toProxy(absolute(line)));
       // …and the URIs carried inside tags (EXT-X-KEY, EXT-X-MAP, EXT-X-MEDIA).
       text = text.replace(/URI="([^"]+)"/g, (_match, uri: string) => `URI="${toProxy(absolute(uri))}"`);
+      rememberStreamHosts(segments);
 
       return new NextResponse(text, {
         status: 200,
