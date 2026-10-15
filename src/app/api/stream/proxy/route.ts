@@ -27,7 +27,15 @@ export async function GET(request: Request) {
     'vidplay.site',
   ];
 
+  // Hosts behind /api/stream/direct: they serve playlists and segments under
+  // disguised paths (`…/cdn/<base64>.js`, `…/file2/<base64>==`) with no media
+  // extension, so the extension rule below can't catch them.
+  const streamHosts = ['netrocdn.site', 'kurututujohn.workers.dev', 'vidspark.to'];
+
   const domainAllowed =
+    streamHosts.some(
+      (d) => parsedUrl.hostname === d || parsedUrl.hostname.endsWith('.' + d)
+    ) ||
     allowedDomains.some(
       (d) => parsedUrl.hostname === d || parsedUrl.hostname.endsWith('.' + d)
     ) ||
@@ -63,21 +71,28 @@ export async function GET(request: Request) {
     const contentType = res.headers.get('content-type') ?? 'application/octet-stream';
     const buffer = await res.arrayBuffer();
 
-    if (
+    const isPlaylist =
       contentType.includes('mpegurl') ||
       contentType.includes('x-mpegurl') ||
-      url.endsWith('.m3u8')
-    ) {
+      /\.m3u8(\?|$)/.test(url) ||
+      new TextDecoder().decode(buffer.slice(0, 7)) === '#EXTM3U';
+
+    if (isPlaylist) {
       let text = new TextDecoder().decode(buffer);
       const baseUrl = url.substring(0, url.lastIndexOf('/') + 1);
-      text = text.replace(/^(?!#)(.+\.(?:ts|m3u8|key))(\?.*)?$/gm, (_, relPath, query) => {
-        const full = relPath.startsWith('http')
-          ? relPath + (query ?? '')
-          : baseUrl + relPath + (query ?? '');
-        return `/api/stream/proxy?url=${encodeURIComponent(full)}&referer=${encodeURIComponent(
+      const toProxy = (target: string) =>
+        `/api/stream/proxy?url=${encodeURIComponent(target)}&referer=${encodeURIComponent(
           referer
         )}`;
-      });
+      const absolute = (target: string) =>
+        target.startsWith('http') ? target : baseUrl + target;
+
+      // Playlists come in more than one shape: some CDNs hide the media
+      // extension (`…/cdn/<base64>.js`, `…/file2/<base64>==`), so rewrite every
+      // non-tag line rather than only .ts/.m3u8/.key ones…
+      text = text.replace(/^(?!#)(\S+)$/gm, (line) => toProxy(absolute(line)));
+      // …and the URIs carried inside tags (EXT-X-KEY, EXT-X-MAP, EXT-X-MEDIA).
+      text = text.replace(/URI="([^"]+)"/g, (_match, uri: string) => `URI="${toProxy(absolute(uri))}"`);
 
       return new NextResponse(text, {
         status: 200,

@@ -56,3 +56,43 @@ curl -X POST https://your-app.example/api/streamtape/mappings \
 ```
 
 For a TV episode, include `season` and `episode`. Look up a mapping with `/api/streamtape/mappings?tmdb_id=550&type=movie`, or verify up to 100 provider files with `/api/streamtape/info?file=FILE_ID_1,FILE_ID_2`.
+
+## Direct Stream Links
+
+`GET /api/stream/direct` resolves a TMDB id to the actual playable video file
+(HLS) behind the default source, plus its subtitle tracks, so your own player or
+iframe can use it instead of embedding a third-party player:
+
+```text
+/api/stream/direct?tmdb_id=550&type=movie
+/api/stream/direct?tmdb_id=1399&type=tv&season=1&episode=1
+/api/stream/direct?tmdb_id=550&type=movie&base=https://your-app.example
+```
+
+```json
+{
+  "success": true,
+  "title": "Fight Club",
+  "stream": {
+    "url": "https://…/master.m3u8",
+    "type": "hls",
+    "referer": "https://moviesapi.to/",
+    "proxy": "/api/stream/proxy?url=…"
+  },
+  "tracks": [{ "label": "English", "url": "https://…/eng.vtt", "proxy": "/api/stream/proxy?url=…" }]
+}
+```
+
+`proxy` links are relative so they work from anything served by this app. A
+player on **another origin** should send `base=https://your-app.example` — the
+links then come back absolute, pointing at that app — or join the relative path
+with the app's own URL itself.
+
+Give your player `stream.proxy` (and each `tracks[].proxy`), not `stream.url`:
+the media CDN only answers requests that carry `Referer: https://moviesapi.to/`,
+which a browser on another origin will not send. The proxy adds that referer
+server-side and rewrites the playlist so its segments keep working through it.
+`stream.url` plus `referer` is for server-side use only.
+
+The response allows cross-origin reads (`Access-Control-Allow-Origin: *`), and
+links are time-limited — resolve them per playback, don't store them.

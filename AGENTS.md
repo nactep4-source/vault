@@ -72,6 +72,16 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3000/login   # 200
   `403 "Expired"` to any referrer other than `vidsrc.sh`, and its flow includes a Cloudflare
   Turnstile. The player only renders when it is the direct, unsandboxed child of our page.
 
+- **Direct stream links (moviesapi)** — `GET /api/stream/direct?tmdb_id=…&type=movie|tv[&season=&episode=]`
+  resolves the real video file behind the default source. moviesapi.to serves the VidSpark player, whose
+  media comes from `https://moviesapi.to/api/vidora/v1/movie/<tmdb id>` (or `/v1/tv/<id>/<season>/<episode>`)
+  with an `x-player-key` header; the key is the `fz` constant baked into that site's player bundle
+  (`/assets/index-*.js`) if it ever needs re-extracting. The returned `.m3u8` sits on a rotating CDN host
+  (`*.netrocdn.site`, `*.workers.dev`, …) that **403s without `Referer: https://moviesapi.to/`**, so the
+  route also returns the same link through `/api/stream/proxy`, which re-sends that referer and rewrites
+  playlist lines. Links are time-limited (~12 h). Verified: resolves + plays through the proxy for a movie
+  and for a TV episode.
+
 ## Optional external integrations
 
 - Streamtape downloads: `STREAMTAPE_LOGIN` + `STREAMTAPE_KEY`, and the mapping endpoints additionally
