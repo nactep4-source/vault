@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import Hls, { type HlsConfig } from 'hls.js';
+import PlayerControls from '@/components/PlayerControls';
 
 // ── Our own player for the direct-stream API ─────────────────────────────────
 //
@@ -91,6 +92,9 @@ type DirectStreamPlayerProps = {
   // Resolving or playing failed — the media page uses this to surface its
   // "try another source" banner instead of having to read this component's state.
   onError?: () => void;
+  // Reported by the control overlay; the media page's play screen keeps its
+  // chrome up while the picture is paused (see PlayerStage's `playing`).
+  onPlayingChange?: (playing: boolean) => void;
   className?: string;
 };
 
@@ -101,9 +105,14 @@ export default function DirectStreamPlayer({
   episode = 1,
   server,
   onError,
+  onPlayingChange,
   className = 'w-full h-full bg-black',
 }: DirectStreamPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  // The element the fullscreen button takes full screen: the video *and* the
+  // control overlay together, since PlayerControls is a sibling of the <video>
+  // rather than a child of it.
+  const surfaceRef = useRef<HTMLDivElement>(null);
   const [stream, setStream] = useState<DirectStreamInfo | null>(null);
   const [title, setTitle] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -190,18 +199,28 @@ export default function DirectStreamPlayer({
   // gives it h-dvh, the media page its 16:9 container), and a `fixed` child
   // would collapse to 0px inside the transformed `.page-enter` wrapper.
   return (
-    <div className={`relative ${className}`}>
+    <div ref={surfaceRef} className={`relative ${className}`}>
+      {/* No native `controls`: our own overlay (PlayerControls) replaces the
+          browser's strip, which cannot be styled and is what made the player
+          read as a plain <video> element. */}
       <video
         ref={videoRef}
         className="w-full h-full bg-black"
-        controls
         autoPlay
         playsInline
         title={title ? `${title} — player` : 'Stream player'}
       />
 
+      {stream && !error && (
+        <PlayerControls
+          videoRef={videoRef}
+          surfaceRef={surfaceRef}
+          onPlayingChange={onPlayingChange}
+        />
+      )}
+
       {!stream && !error && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-void">
+        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-void">
           <div className="w-8 h-8 rounded-full border-2 border-t-transparent border-violet animate-spin" />
           <p className="text-[11px] text-muted font-medium tracking-wider uppercase">
             Loading stream…
@@ -210,7 +229,7 @@ export default function DirectStreamPlayer({
       )}
 
       {error && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-void px-6 text-center">
+        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-2 bg-void px-6 text-center">
           <p className="font-display text-sm font-semibold text-foreground">
             {title ?? 'Playback unavailable'}
           </p>
