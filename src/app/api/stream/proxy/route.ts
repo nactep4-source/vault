@@ -7,6 +7,12 @@ import { NextResponse } from 'next/server';
 const FIRST_BYTE_TIMEOUT_MS = 20000;
 const IDLE_TIMEOUT_MS = 60000;
 
+// A stalled shard is transient — the same host served the same playlist in
+// 1.2 s seconds after stalling past the idle budget — so one retry turns the
+// old "upstream stalled mid-body" 502 into a slow-but-working response. Kept
+// at two attempts so a genuinely dead shard still fails fast.
+const MAX_ATTEMPTS = 2;
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const url = searchParams.get('url');
@@ -81,20 +87,24 @@ export async function GET(request: Request) {
     /* the outer URL was already validated above */
   }
 
-  // The CDN drip-feeds its responses: headers usually land within a second, but
-  // the body can crawl — a large VOD playlist (150–350 KB) has taken ~45 s to
-  // drain here, and shards that are throttled go slower still. A whole-transfer
-  // timeout therefore aborted perfectly good downloads ("TimeoutError: The
-  // operation was aborted due to timeout", 502 to the player). Bound the time
-  // to *first byte* instead, and let `readChunk` below cut loose an upstream
-  // that genuinely stops sending mid-body.
-  const abortController = new AbortController();
-  const firstByteTimer = setTimeout(
-    () => abortController.abort(new Error('upstream timed out before first byte')),
-    FIRST_BYTE_TIMEOUT_MS
-  );
+  // One complete upstream attempt. Resolves to the response the player gets,
+  // and *throws* only when the upstream itself failed (fetch error, timeout,
+  // mid-body stall) — which is exactly what the retry loop below catches. An
+  // upstream HTTP status is a real answer, not a throw, so it is passed through.
+  const serveOnce = async (): Promise<NextResponse> => {
+    // The CDN drip-feeds its responses: headers usually land within a second,
+    // but the body can crawl — a large VOD playlist (150–350 KB) has taken
+    // ~45 s to drain here, and shards that are throttled go slower still. A
+    // whole-transfer timeout therefore aborted perfectly good downloads
+    // ("TimeoutError: The operation was aborted due to timeout", 502 to the
+    // player). Bound the time to *first byte* instead, and let `readChunk`
+    // below cut loose an upstream that genuinely stops sending mid-body.
+    const abortController = new AbortController();
+    const firstByteTimer = setTimeout(
+      () => abortController.abort(new Error('upstream timed out before first byte')),
+      FIRST_BYTE_TIMEOUT_MS
+    );
 
-  try {
     const res = await fetch(fetchUrl, {
       headers: {
         'User-Agent':
@@ -199,7 +209,8 @@ export async function GET(request: Request) {
     }
 
     // Media (segments, keys): pass the bytes through as they arrive, starting
-    // with the chunk already read for the signature check.
+    // with the chunk already read for the signature check. Nothing is retried
+    // from here on — these bytes are already on their way to the player.
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         if (head.length) controller.enqueue(head);
@@ -233,6 +244,23 @@ export async function GET(request: Request) {
         'Cache-Control': 'public, max-age=3600',
       },
     });
+  };
+
+  try {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await serveOnce();
+      } catch (err) {
+        if (attempt >= MAX_ATTEMPTS) throw err;
+        // Warn, not error: this attempt is expected to happen on these shards
+        // and the retry below usually succeeds, so it is not a failed request.
+        console.warn(
+          '[Stream Proxy] upstream attempt failed, retrying:',
+          err instanceof Error ? err.message : String(err),
+          fetchUrl
+        );
+      }
+    }
   } catch (err) {
     // An aborted fetch rejects with a DOMException whose printed form is a huge
     // table of error-code constants (it filled the logs); the message is enough.

@@ -88,17 +88,22 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3000/login   # 200
     its own front (`p1.hd4u.sbs/proxy?url=…`, `…/segment?url=…`) that intermittently answers 503 while the
     CDN behind it is healthy, so the proxy unwraps `hd4u.sbs` to the `url=` it carries. The media page
     exposes both as its "Direct" and "Server 2" tabs (both `own: true`, i.e. our player, `server=2` on the
-    embed URL for the second). **Server 2 playback could NOT be verified on 2026-10-15**: every call to
-    `vidsrc.pm/api/vidora/v1/...` answered `502` (its plain site pages still answered 200), so
-    `/api/stream/direct` says "Could not reach the source" for titles only server 2 carries — e.g. TV 65733
-    ("No stream available for this title" when `server=1` is forced).
+    embed URL for the second). **Server 2 was temporarily unreachable on 2026-10-15** — every call to
+    `vidsrc.pm/api/vidora/v1/...` answered `502` while its plain site pages still answered 200. It recovered
+    later that day: `server=2` resolves "Fight Club" (provider `scrapify`) and its proxy playlist (284 KB)
+    plus a 442 KB segment both answer 200, and it carries series server 1 does not (94605, 82856, 94997,
+    71446, 63174, …). Titles in *neither* catalogue still fail with "Could not reach the source." — TV 1402
+    (server 1: `404 "No Vidora link found for this episode"`, server 2: `502`) and TV 65733 / 76479.
   - **Upstream refusals that are NOT our code (state as of 2026-10-15).** Shards rotate per resolve, and
     most were unhealthy while testing: `bx.netrocdn.site` served `.m3u8` but redirected **every media
     request** (`/file2/<base64>`) to `https://www.cloudflare-terms-of-service-abuse.com/stream.mp4` (a
     Cloudflare abuse-mitigation page, so no video bytes at all), and throttled playlists to ~3.5 KB/s;
     `north-man.kurututujohn.workers.dev` answered empty; `p1.hd4u.sbs` (server 2's CDN) returned nothing.
     Playback of titles on those shards fails regardless of the proxy — re-test a title before treating a
-    playback failure as ours.
+    playback failure as ours. Re-checked later on 2026-10-15: `bx.netrocdn.site` now answers a media request
+    with a **12 275-byte `ftypisom` placeholder mp4** (byte-identical for movie 550 and TV 1399) instead of
+    the requested segment, while TV 66732's segment came back as 424 KB of real TS — so one title can look
+    "resolved but unplayable" entirely upstream of the proxy.
   - **`/api/stream/proxy` streams media instead of buffering it.** It reads one chunk to tell a playlist
     from media by the `#EXTM3U` signature (necessary: that CDN hides extensions behind base64 paths like
     `…/cdn/<base64>.js`), buffers playlists for rewriting, and passes segments/keys through byte-for-byte.
@@ -112,8 +117,9 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3000/login   # 200
     200 with `#EXT-X-ENDLIST` (48 s, nothing logged); master + variant playlists still rewrite to
     `/api/stream/proxy` links; and a 1.9 MB segment proxied from a public HLS test stream
     (`test-streams.mux.dev/x36xhzz/x36xhzz.m3u8`) is **byte-identical (md5) to the origin's own bytes**.
-    Note a playlist that slow also outlasts hls.js's default manifest timeout (~10 s), so the viewer can
-    still fail client-side on such a shard even when the proxy succeeds.
+    Note a playlist that slow also outlasts hls.js's own defaults (10 s to first byte, 20 s per load), which
+    is why the bundled player raises its load budgets — see the player bullet below. Measured TTFB through the
+    proxy on 2026-10-15: series 66732's variant playlist 15.6 s, movie 550's 81 s, series 60625's 0.7 s.
   - **Ready-made player page: `/embed/[type]/[id]`** (`?season=&episode=` for TV) — a chrome-free page
     that calls `/api/stream/direct` itself and plays `stream.proxy` with the bundled `hls.js`, so this app
     can be iframed from anywhere instead of a third-party player. It is **deliberately public**: it is
@@ -134,6 +140,15 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3000/login   # 200
     player was not automatically verified (the preview navigate helper did not switch routes in that
     session), but the TV resolve it depends on is: `?tmdb_id=1399&type=tv&season=1&episode=1` returns
     `success: true` for "Game of Thrones" and its proxy playlist answers 200.
+  - **The player raises hls.js's load budgets (2026-10-15).** `DirectStreamPlayer.tsx` passes `HLS_CONFIG`
+    to `new Hls(...)`: manifests and playlists get 90 s to first byte / 150 s total, fragments 30 s / 150 s,
+    with retries. Reason: hls.js's own playlist defaults (10 s / 20 s) are shorter than the proxy's own
+    tolerance, so a throttled shard made playback fail client-side ("Playback failed — this title may no
+    longer be available") *after* the proxy had delivered the playlist correctly — the "series don't play"
+    report. Series playlists are the big ones (15.6 s measured vs 0.7 s for another series and 81 s for a
+    movie, same day), which is why it looked like a series-only bug. `/api/stream/direct` also says
+    "Could not reach the source." for titles in neither catalogue (TV 1402/65733/76479), which is a separate,
+    upstream limit — "Try next source" is the way out for those.
   - **Don't size a full-bleed route with `fixed inset-0`.** Every route is wrapped in `.page-enter`
     (`src/app/template.tsx`), whose animation leaves a `transform` on that wrapper
     (`animation-fill-mode: forwards`), and a transformed ancestor becomes the containing block for

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
-import Hls from 'hls.js';
+import Hls, { type HlsConfig } from 'hls.js';
 
 // ── Our own player for the direct-stream API ─────────────────────────────────
 //
@@ -19,6 +19,46 @@ import Hls from 'hls.js';
 //
 // hls.js comes from the app's own dependencies (no CDN): the playlist is HLS,
 // which only Safari plays natively.
+
+// Load budgets for hls.js.
+//
+// /api/stream/proxy can only answer a playlist once it has drained it from the
+// CDN (it has to rewrite the segment links), and these shards drip-feed: a
+// *series* playlist is a big multi-variant list and has taken 15–26 s to come
+// through, where a movie's smaller one drains in about a second. hls.js's
+// defaults allow a playlist only 10 s to the first byte and 20 s in total, so
+// slow ones were aborted client-side — "Playback failed" on series while movies
+// played. These match what the proxy itself tolerates (20 s to first byte, 60 s
+// between body chunks).
+// The proxy answers a playlist only once it has drained it, so the first byte
+// *is* the whole drain: measured through it, a series variant playlist took
+// 15.6 s and a movie's reached 81 s on a badly throttled shard — both past
+// hls.js's own defaults for playlists (10 s to first byte, 20 s in total), which
+// is what aborted series that the proxy had delivered fine. These ceilings are
+// upper bounds, not waits: playback starts the moment the playlist lands. A dead
+// shard still fails quickly — the proxy itself gives up after 20 s without
+// headers or 60 s between body chunks.
+const PLAYLIST_LOAD_POLICY = {
+  maxTimeToFirstByteMs: 90000,
+  maxLoadTimeMs: 150000,
+  timeoutRetry: { maxNumRetry: 2, retryDelayMs: 0, maxRetryDelayMs: 0 },
+  errorRetry: { maxNumRetry: 4, retryDelayMs: 1000, maxRetryDelayMs: 8000 },
+};
+
+// Segments start flowing as soon as the proxy has read one chunk, so only a
+// genuinely stuck shard delays their first byte.
+const FRAGMENT_LOAD_POLICY = {
+  maxTimeToFirstByteMs: 30000,
+  maxLoadTimeMs: 150000,
+  timeoutRetry: { maxNumRetry: 2, retryDelayMs: 0, maxRetryDelayMs: 0 },
+  errorRetry: { maxNumRetry: 6, retryDelayMs: 1000, maxRetryDelayMs: 8000 },
+};
+
+const HLS_CONFIG: Partial<HlsConfig> = {
+  manifestLoadPolicy: { default: PLAYLIST_LOAD_POLICY },
+  playlistLoadPolicy: { default: PLAYLIST_LOAD_POLICY },
+  fragLoadPolicy: { default: FRAGMENT_LOAD_POLICY },
+};
 
 export type DirectStreamInfo = {
   url: string;
@@ -107,7 +147,7 @@ export default function DirectStreamPlayer({
     if (!video || !stream) return;
 
     if (Hls.isSupported()) {
-      const hls = new Hls();
+      const hls = new Hls(HLS_CONFIG);
       hls.loadSource(stream.proxy);
       hls.attachMedia(video);
       hls.on(Hls.Events.ERROR, (_event, data) => {

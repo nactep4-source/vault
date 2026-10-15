@@ -152,3 +152,12 @@ The app's own media pages use that same player: the **Direct** source tab on
 through our own player by default instead of a third-party embed. That tab has no
 "Clean mode"/"Popup blocker" toggles — there is nothing to strip or block — and if
 a title has no stream, "Try next source" moves on to the embeds.
+
+Because `/api/stream/proxy` can only answer a playlist once it has drained it from
+the CDN, its first byte is the whole drain, and these shards drip-feed: measured
+through it, a series variant playlist took 15.6 s and a movie's reached 81 s on a
+throttled shard. hls.js's defaults for playlists (10 s to first byte, 20 s in total)
+were therefore aborting series the proxy had delivered fine, so the player raises
+them to 90 s / 150 s (with retries). Those are ceilings, not waits — playback starts
+as soon as the playlist arrives, and a dead shard still fails, because the proxy
+gives up after 20 s without headers or 60 s between body chunks.
