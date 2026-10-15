@@ -111,6 +111,14 @@ const EMBED_SOURCES: EmbedSource[] = [
     name: 'VidSrc',
     color: '#38BDF8',
     referrerPolicy: DEFAULT_REFERRER_POLICY,
+    // Never sandboxed: this player family refuses to run in ANY sandboxed
+    // frame (vidsrc.sh, vidsrc.to, vidsrc.me, vidsrc.su and the vsembed.ru
+    // player each serve their own "can't be embedded in a sandboxed frame"
+    // page). Proxying a copy is no alternative either — the real player token
+    // is referrer-locked to vidsrc.sh and answers 403 "Expired" for any other
+    // referrer. So this source plays unprotected and its ad redirects cannot
+    // be blocked; see AGENTS.md.
+    sandbox: false,
     getUrl: (id, type, s, e) =>
       type === 'movie'
         ? `https://vidsrc.sh/embed/movie/${id}`
@@ -121,9 +129,11 @@ const EMBED_SOURCES: EmbedSource[] = [
 // Popup / redirect blocking.
 // The embeds are cross-origin iframes, so page-level hooks (window.open,
 // click handlers) never see what happens inside them. The only reliable
-// control is the iframe `sandbox` attribute: the player still loads and
-// plays, but it is NOT granted allow-popups / allow-top-navigation, so it
-// can't open new tabs or redirect this page.
+// control is the iframe `sandbox` attribute: the player is NOT granted
+// allow-popups / allow-top-navigation, so it can't open new tabs or redirect
+// this page — provided the source still plays that way. The VidSrc family
+// does not: it refuses ANY sandboxed frame, so it is opted out with
+// `sandbox: false` below (see AGENTS.md).
 const POPUP_BLOCK_SANDBOX =
   'allow-scripts allow-same-origin allow-forms allow-presentation';
 // Used for proxied embeds served from our own origin — must NOT include

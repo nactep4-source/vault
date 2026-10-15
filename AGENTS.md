@@ -59,6 +59,18 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3000/login   # 200
 - Ad *popup windows* and redirects are blocked by that iframe `sandbox` — the embeds are
   cross-origin, so page-level hooks (window.open, click handlers) can never see inside them.
   Ads rendered *inside* the player frame cannot be removed without proxying.
+- **The VidSrc family can be neither sandboxed nor proxied, so its ad redirects are NOT
+  blockable** — it is therefore marked `sandbox: false` in the media page (it plays
+  unprotected; the "Popup blocker" toggle has no effect on it). Verified in the preview:
+  `vidsrc.sh`'s own `/assets/sbx.js` refuses ANY sandboxed frame — `allow-popups`,
+  `allow-top-navigation-by-user-activation`, an opaque-origin sandbox and a *nested*
+  sandboxed same-origin wrapper all still end on its "This content can't be embedded in a
+  sandboxed frame" page — and so do mirrors (vidsrc.to → vsembed.ru, vidsrc.me, vidsrc.su).
+  Proxying a copy is no alternative either: the real player
+  (`stellarconductornexus.com/embed/movie/<id>?vs=…`, URL resolved by
+  `vidsrc.sh/vs_src.php?type=movie&id=<tmdb id>`) is **referrer-locked** and answers
+  `403 "Expired"` to any referrer other than `vidsrc.sh`, and its flow includes a Cloudflare
+  Turnstile. The player only renders when it is the direct, unsandboxed child of our page.
 
 ## Optional external integrations
 
