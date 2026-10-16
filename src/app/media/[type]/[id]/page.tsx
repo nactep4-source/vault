@@ -999,7 +999,7 @@ export default function MediaDetailPage() {
 
                 {/* Big, gradient-filled display title — the signature StreamVault flourish */}
                 <h1
-                  className="font-display text-[38px] sm:text-[52px] md:text-[68px] font-extrabold tracking-[-0.02em] leading-[0.98] mb-[18px]"
+                  className="font-sans text-[38px] sm:text-[52px] md:text-[68px] font-extrabold tracking-[-0.02em] leading-[0.98] mb-[18px]"
                   style={{
                     background:
                       'linear-gradient(90deg, #ffffff 35%, var(--violet-light) 85%, var(--magenta) 110%)',
