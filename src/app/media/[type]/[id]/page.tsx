@@ -997,15 +997,11 @@ export default function MediaDetailPage() {
                   )}
                 </div>
 
-                {/* Big, gradient-filled display title — the signature StreamVault flourish */}
+                {/* Bold uppercase title — solid white with subtle glow */}
                 <h1
-                  className="font-sans text-[38px] sm:text-[52px] md:text-[68px] font-extrabold tracking-[-0.02em] leading-[0.98] mb-[18px]"
+                  className="font-sans text-[38px] sm:text-[52px] md:text-[68px] font-extrabold tracking-[-0.02em] leading-[0.98] mb-[18px] uppercase text-white"
                   style={{
-                    background:
-                      'linear-gradient(90deg, #ffffff 35%, var(--violet-light) 85%, var(--magenta) 110%)',
-                    WebkitBackgroundClip: 'text',
-                    WebkitTextFillColor: 'transparent',
-                    backgroundClip: 'text',
+                    textShadow: '0 0 40px rgba(255,255,255,0.15), 0 2px 8px rgba(0,0,0,0.5)',
                   }}
                 >
                   {detail.title}
