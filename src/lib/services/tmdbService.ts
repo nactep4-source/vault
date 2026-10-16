@@ -148,6 +148,7 @@ export interface TMDBMovieDetail {
   cast?: string[];
   director?: string;
   certification?: string;
+  logoImg?: string | null;
 }
 
 export interface TMDBTVDetail {
@@ -1104,7 +1105,8 @@ export async function getMovieDetails(
 ): Promise<TMDBMovieDetail | null> {
   try {
     const params: Record<string, string> = {
-      append_to_response: appendToResponse || 'credits,release_dates',
+      append_to_response: appendToResponse || 'credits,release_dates,images',
+      include_image_language: 'en,null',
     };
     const m = await tmdbFetch(`/movie/${movieId}`, params);
 
@@ -1120,6 +1122,14 @@ export async function getMovieDetails(
     const cert =
       usRelease?.release_dates?.find((d: any) => d.certification)?.certification || undefined;
 
+    // Pick the best English (or language-neutral) logo from TMDB's image set.
+    // These are the stylized title artworks seen on movie posters.
+    const logos = m.images?.logos || [];
+    const bestLogo = logos
+      .filter((l: any) => l.iso_639_1 === 'en' || l.iso_639_1 === null)
+      .sort((a: any, b: any) => (b.vote_average || 0) - (a.vote_average || 0))[0];
+    const logoImg = bestLogo ? `${TMDB_IMAGE_BASE}/w500${bestLogo.file_path}` : null;
+
     return {
       id: m.id,
       title: m.title || m.original_title,
@@ -1134,6 +1144,7 @@ export async function getMovieDetails(
       cast: cast.length > 0 ? cast : undefined,
       director,
       certification: cert,
+      logoImg,
     };
   } catch {
     const match = FALLBACK_MOVIES.find((f) => f.id === movieId);

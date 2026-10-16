@@ -997,15 +997,23 @@ export default function MediaDetailPage() {
                   )}
                 </div>
 
-                {/* Bold uppercase title — solid white with subtle glow */}
-                <h1
-                  className="font-sans text-[38px] sm:text-[52px] md:text-[68px] font-extrabold tracking-[-0.02em] leading-[0.98] mb-[18px] uppercase text-white"
-                  style={{
-                    textShadow: '0 0 40px rgba(255,255,255,0.15), 0 2px 8px rgba(0,0,0,0.5)',
-                  }}
-                >
-                  {detail.title}
-                </h1>
+                {/* Movie title — official logo artwork when available, text fallback otherwise */}
+                {isMovie && movieDetail?.logoImg ? (
+                  <img
+                    src={movieDetail.logoImg}
+                    alt={detail.title}
+                    className="w-full max-w-[340px] h-auto mb-[18px] drop-shadow-[0_2px_12px_rgba(0,0,0,0.6)]"
+                  />
+                ) : (
+                  <h1
+                    className="font-sans text-[38px] sm:text-[52px] md:text-[68px] font-extrabold tracking-[-0.02em] leading-[0.98] mb-[18px] uppercase text-white"
+                    style={{
+                      textShadow: '0 0 40px rgba(255,255,255,0.15), 0 2px 8px rgba(0,0,0,0.5)',
+                    }}
+                  >
+                    {detail.title}
+                  </h1>
+                )}
 
                 {/* Overview with inline MORE/LESS button */}
                 <div className="mb-5 text-[14.5px] leading-[1.65] text-muted-strong">
