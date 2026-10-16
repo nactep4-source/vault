@@ -8,7 +8,7 @@ import AppImage from '@/components/ui/AppImage';
 import { ShimmerImage, ShimmerCard } from '@/components/Shimmer';
 import StreamtapeDownloadButton from '@/components/StreamtapeDownloadButton';
 import DirectStreamPlayer from '@/components/DirectStreamPlayer';
-import PlayerStage from '@/components/PlayerStage';
+import PreviewModal from '@/components/PreviewModal';
 import {
   getMovieDetails,
   getTVDetails,
@@ -234,7 +234,6 @@ export default function MediaDetailPage() {
   const [fullCredits, setFullCredits] = useState<TMDBCastMember[]>([]);
   const [related, setRelated] = useState<TMDBCatalogItem[]>([]);
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const playerRef = useRef<HTMLDivElement>(null);
 
   // Snap-scroll rails (Episodes, Trailers, Related, Cast & Crew) — same
   // arrow-button + scrollBy pattern as the homepage's MovieRow, so these
@@ -529,9 +528,6 @@ export default function MediaDetailPage() {
     setLoadError(false);
     setIframeLoaded(false);
     setIframeKey((k) => k + 1);
-    setTimeout(() => {
-      playerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }, 120);
 
     // Record to recent watched (persists to Supabase if logged in, and localStorage for guests/all users)
     if (detail) {
@@ -852,11 +848,7 @@ export default function MediaDetailPage() {
 
   return (
     <div className="page-enter relative min-h-screen bg-void text-foreground overflow-x-hidden font-sans selection:bg-violet selection:text-white">
-      {/* The detail view's chrome — backdrop, floating Back button, credits —
-          and the hero below it belong to browsing. While something is playing
-          the page is the play screen instead, so none of it renders and closing
-          the player brings it straight back. */}
-      {!showPlayer && (
+      {/* The detail view's chrome — backdrop, floating Back button, credits */}
         <>
         {/* ── Immersive Multi-stop Gradient Backdrop ── */}
         <div
@@ -917,24 +909,19 @@ export default function MediaDetailPage() {
           )}
         </div>
         </>
-      )}
 
-      {/* ── Play screen ──
-          The title's own stage: the picture at full size with the source,
-          the embed toggles and the recovery paths as chrome on top of it
-          (see PlayerStage). It replaces the old player row that used to sit
-          inside the detail view — same controls, same behaviour, presented
-          the way a video app presents them. */}
+      {/* ── Preview modal ──
+          Opens on top of the media page when Watch is pressed, so the page
+          stays visible behind a large player overlay instead of being
+          replaced by a full-screen player. */}
       {showPlayer && (
-        <PlayerStage
-          ref={playerRef}
+        <PreviewModal
           title={detail.title}
           context={stageContext}
-          ambientSrc={backdropImageSrc}
+          onClose={closePlayer}
           sources={EMBED_SOURCES.map((source) => ({ name: source.name, color: source.color }))}
           activeSourceIndex={activeSourceIndex}
           onSelectSource={handleSourceChange}
-          onClose={closePlayer}
           onNextSource={handleNextSource}
           showEmbedControls={!isOwnSource}
           cleanActive={cleanActive}
@@ -953,7 +940,6 @@ export default function MediaDetailPage() {
           loading={!iframeLoaded && !loadError && !isOwnSource}
           hintVisible={showSourceHint}
           onDismissHint={() => setShowSourceHint(false)}
-          playing={isOwnSource ? playerPlaying : null}
           notice={redirectBlockedNotice ? 'Redirect blocked — player restored' : null}
           overlay={upNextCard}
           player={playerSurface}
@@ -962,10 +948,8 @@ export default function MediaDetailPage() {
 
       {/* ── Main Hero Content Layout ── */}
       <div className="relative z-10 max-w-[1140px] mx-auto px-6 md:px-10 pb-20">
-        {/* The detail view's hero (poster, title, actions) — hidden while the
-            stage above has the screen. */}
-        {!showPlayer && (
-          <div className="min-h-[85vh] flex flex-col justify-end pb-20 md:pb-28">
+        {/* The detail view's hero (poster, title, actions) */}
+        <div className="min-h-[85vh] flex flex-col justify-end pb-20 md:pb-28">
             <div className="flex flex-col md:flex-row gap-8 md:gap-[38px] items-start md:items-end w-full pt-28 md:pt-0">
               {/* Poster */}
               <div className="flex-none w-[130px] sm:w-[150px] md:w-[180px] aspect-[2/3] rounded-[14px] overflow-hidden shadow-[0_24px_56px_rgba(0,0,0,0.6)] border border-white/[0.08] relative bg-void-2">
@@ -1062,9 +1046,7 @@ export default function MediaDetailPage() {
                     className="flex items-center gap-2 px-6 py-3 rounded-xl bg-white text-black font-bold text-sm hover:bg-zinc-200 transition-all shadow-lg cursor-pointer active:scale-95"
                   >
                     <Play className="w-4 h-4 fill-current" />
-                    {showPlayer
-                      ? 'Resume Watching'
-                      : lastWatched?.season && lastWatched?.episode
+                    {lastWatched?.season && lastWatched?.episode
                       ? `Resume S${lastWatched.season} E${lastWatched.episode}`
                       : lastWatched?.progress && lastWatched?.duration && lastWatched.duration > 0
                       ? `Resume (${Math.max(1, Math.round((lastWatched.duration - lastWatched.progress) / 60))}m left)`
@@ -1113,7 +1095,6 @@ export default function MediaDetailPage() {
               </div>
             </div>
           </div>
-        )}
 
         {/* ── Episode browsing rail (TV shows only) ── */}
         {!isMovie && (
