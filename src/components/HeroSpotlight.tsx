@@ -21,6 +21,7 @@ interface SpotlightItem {
   release_date?: string;
   first_air_date?: string;
   genre_ids?: number[];
+  logoImg?: string | null;
 }
 
 interface HeroSpotlightProps {
@@ -210,9 +211,20 @@ export default function HeroSpotlight({
                 {genres.length > 0 && <span className="lowercase">{genres.join(', ')}</span>}
               </div>
 
-              <h1 className="font-display text-4xl sm:text-5xl md:text-[4.5rem] lg:text-[5.25rem] font-extrabold tracking-tight text-foreground leading-[0.92] mb-5 uppercase">
-                {displayTitle}
-              </h1>
+              {display.logoImg ? (
+                <div className="mb-5">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={display.logoImg}
+                    alt={displayTitle}
+                    className="w-full max-w-[420px] h-auto drop-shadow-[0_2px_16px_rgba(0,0,0,0.7)]"
+                  />
+                </div>
+              ) : (
+                <h1 className="font-display text-4xl sm:text-5xl md:text-[4.5rem] lg:text-[5.25rem] font-extrabold tracking-tight text-foreground leading-[0.92] mb-5 uppercase">
+                  {displayTitle}
+                </h1>
+              )}
 
               {display.overview && (
                 <p className="text-[13px] md:text-sm text-muted font-medium line-clamp-2 leading-relaxed mb-7 max-w-[440px]">

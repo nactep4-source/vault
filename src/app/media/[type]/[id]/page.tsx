@@ -8,7 +8,7 @@ import AppImage from '@/components/ui/AppImage';
 import { ShimmerImage, ShimmerCard } from '@/components/Shimmer';
 import StreamtapeDownloadButton from '@/components/StreamtapeDownloadButton';
 import DirectStreamPlayer from '@/components/DirectStreamPlayer';
-import PlayerStage from '@/components/PlayerStage';
+import PreviewModal from '@/components/PreviewModal';
 import {
   getMovieDetails,
   getTVDetails,
@@ -60,10 +60,11 @@ const DEFAULT_REFERRER_POLICY: React.HTMLAttributeReferrerPolicy = 'origin';
 
 const EMBED_SOURCES: EmbedSource[] = [
   {
-    // Our own player on the same provider MoviesAPI's embed uses, minus its ad
-    // scripts and popups. Being first makes it the default source, so "Watch
-    // now" plays through our player; when a title has no stream, the usual
-    // "Try next source" banner offers the third-party embeds.
+    // Our own unified player. Instead of exposing separate source tabs for each
+    // backend, this single source auto-cycles through all of them: it tries the
+    // fast vidora pair (moviesapi → vidsrc.pm) first, then VidCore, then VidSrc —
+    // moving to the next the moment the current one reports the title is not
+    // there or fails to load. The viewer sees one player, not a row of tabs.
     name: 'Direct',
     color: '#7B2FFF',
     own: true,
@@ -71,20 +72,6 @@ const EMBED_SOURCES: EmbedSource[] = [
       type === 'movie'
         ? `/embed/movie/${id}`
         : `/embed/tv/${id}?season=${s ?? 1}&episode=${e ?? 1}`,
-  },
-  {
-    // The same ad-free player, pinned to our second stream source (vidsrc.pm)
-    // instead of the first (moviesapi.to). The two carry different catalogues,
-    // so this is what to switch to when "Direct" has no stream for a title —
-    // although "Direct" itself already falls back to this source automatically.
-    name: 'Server 2',
-    color: '#22D3EE',
-    own: true,
-    server: 2,
-    getUrl: (id, type, s, e) =>
-      type === 'movie'
-        ? `/embed/movie/${id}?server=2`
-        : `/embed/tv/${id}?season=${s ?? 1}&episode=${e ?? 1}&server=2`,
   },
   {
     name: 'MoviesAPI',
@@ -96,70 +83,28 @@ const EMBED_SOURCES: EmbedSource[] = [
         : `https://moviesapi.to/tv/${id}/${s ?? 1}/${e ?? 1}`,
   },
   {
-    // Resolved server-side (server 3) and played in our own player. Its embed
-    // ships a popup/overlay ad SDK (/tc/ff-tag.php + /tc/ff-prime.php, the
-    // latter resetting the vendor's frequency caps on every click, so its ads
-    // come back) that clean mode could never remove — a proxied copy of that
-    // player cannot run. Playing its streams natively sidesteps the player
-    // entirely: the bundle resolves most of its servers through an aggregator
-    // that answers plain HLS links (see src/lib/server/directSources/vidcore.ts).
-    name: 'VidCore',
-    color: '#A78BFA',
-    own: true,
-    server: 3,
-    getUrl: (id, type, s, e) =>
-      type === 'movie'
-        ? `/embed/movie/${id}?server=3`
-        : `/embed/tv/${id}?season=${s ?? 1}&episode=${e ?? 1}&server=3`,
-  },
-  {
-    // Confirmed against vidcore.io's own docs — a different service from
-    // vidcore.org despite the similar name, hence the different URL shape
-    // (no /embed/ segment, params tuned to match the app's own chrome
-    // instead of their defaults: theme= matches --violet, and TV gets a
-    // native "Next Episode" button since VidCore.io actually supports one).
+    // A different service from vidcore.org despite the similar name, hence the
+    // different URL shape (no /embed/ segment, params tuned to match the app's
+    // own chrome instead of their defaults: theme= matches --violet, and TV
+    // gets a native "Next Episode" button since VidCore.io actually supports one).
     //
     // allow/referrerPolicy deliberately omitted (undefined) — a working
     // reference embed of this same service used neither attribute at all,
-    // just `allowfullscreen`, so this source skips both instead of
-    // inheriting the other sources' defaults.
-    //
-    // Domain switched from vidcore.io to vidcore.net — the reference embed
-    // pointed at .net (its DevTools baseURI still resolved to vidcore.io
-    // under the hood, confirming it's the same service), so this tries the
-    // domain that was actually observed working rather than the one from
-    // their docs page.
+    // just `allowfullscreen`, so this source skips both instead of inheriting
+    // the other sources' defaults.
     name: 'VidCore.io',
     color: '#22C55E',
-    // allow/referrerPolicy intentionally not set — see note above.
     getUrl: (id, type, s, e) => {
       const params = new URLSearchParams({
-        theme: '7B2FFF', // matches --violet, no # prefix per their docs
+        theme: '7B2FFF',
         autoPlay: 'true',
       });
       if (type === 'movie') {
         return `https://vidcore.net/movie/${id}?${params.toString()}`;
       }
-      params.set('nextButton', 'true'); // shows their native next-episode button; autoNext left off so it doesn't fight the app's own "Up Next" card
+      params.set('nextButton', 'true');
       return `https://vidcore.net/tv/${id}/${s ?? 1}/${e ?? 1}?${params.toString()}`;
     },
-  },
-  {
-    // Resolved server-side (server 4) and played in our own player: the embed
-    // could be neither sandboxed nor proxied — this player family refuses any
-    // sandboxed frame, and a proxied copy of its player is referrer-locked — so
-    // embedding it was the one way to keep its ad redirects, which nothing
-    // could block. Its own stream links need no such protection: /api/stream/direct
-    // walks the same chain the player does (vs_src.php → player page → apiToken
-    // → encrypted stream list → per-host token) and hands back a plain HLS link.
-    name: 'VidSrc',
-    color: '#38BDF8',
-    own: true,
-    server: 4,
-    getUrl: (id, type, s, e) =>
-      type === 'movie'
-        ? `/embed/movie/${id}?server=4`
-        : `/embed/tv/${id}?season=${s ?? 1}&episode=${e ?? 1}&server=4`,
   },
 ];
 
@@ -289,7 +234,6 @@ export default function MediaDetailPage() {
   const [fullCredits, setFullCredits] = useState<TMDBCastMember[]>([]);
   const [related, setRelated] = useState<TMDBCatalogItem[]>([]);
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const playerRef = useRef<HTMLDivElement>(null);
 
   // Snap-scroll rails (Episodes, Trailers, Related, Cast & Crew) — same
   // arrow-button + scrollBy pattern as the homepage's MovieRow, so these
@@ -584,9 +528,6 @@ export default function MediaDetailPage() {
     setLoadError(false);
     setIframeLoaded(false);
     setIframeKey((k) => k + 1);
-    setTimeout(() => {
-      playerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }, 120);
 
     // Record to recent watched (persists to Supabase if logged in, and localStorage for guests/all users)
     if (detail) {
@@ -830,7 +771,7 @@ export default function MediaDetailPage() {
       mediaId={mediaId}
       season={selectedSeason}
       episode={selectedEpisode}
-      server={activeSource.server}
+      servers={[undefined, 3, 4]}
       onError={handleIframeError}
       onPlayingChange={setPlayerPlaying}
     />
@@ -907,11 +848,7 @@ export default function MediaDetailPage() {
 
   return (
     <div className="page-enter relative min-h-screen bg-void text-foreground overflow-x-hidden font-sans selection:bg-violet selection:text-white">
-      {/* The detail view's chrome — backdrop, floating Back button, credits —
-          and the hero below it belong to browsing. While something is playing
-          the page is the play screen instead, so none of it renders and closing
-          the player brings it straight back. */}
-      {!showPlayer && (
+      {/* The detail view's chrome — backdrop, floating Back button, credits */}
         <>
         {/* ── Immersive Multi-stop Gradient Backdrop ── */}
         <div
@@ -972,24 +909,19 @@ export default function MediaDetailPage() {
           )}
         </div>
         </>
-      )}
 
-      {/* ── Play screen ──
-          The title's own stage: the picture at full size with the source,
-          the embed toggles and the recovery paths as chrome on top of it
-          (see PlayerStage). It replaces the old player row that used to sit
-          inside the detail view — same controls, same behaviour, presented
-          the way a video app presents them. */}
+      {/* ── Preview modal ──
+          Opens on top of the media page when Watch is pressed, so the page
+          stays visible behind a large player overlay instead of being
+          replaced by a full-screen player. */}
       {showPlayer && (
-        <PlayerStage
-          ref={playerRef}
+        <PreviewModal
           title={detail.title}
           context={stageContext}
-          ambientSrc={backdropImageSrc}
+          onClose={closePlayer}
           sources={EMBED_SOURCES.map((source) => ({ name: source.name, color: source.color }))}
           activeSourceIndex={activeSourceIndex}
           onSelectSource={handleSourceChange}
-          onClose={closePlayer}
           onNextSource={handleNextSource}
           showEmbedControls={!isOwnSource}
           cleanActive={cleanActive}
@@ -1008,7 +940,6 @@ export default function MediaDetailPage() {
           loading={!iframeLoaded && !loadError && !isOwnSource}
           hintVisible={showSourceHint}
           onDismissHint={() => setShowSourceHint(false)}
-          playing={isOwnSource ? playerPlaying : null}
           notice={redirectBlockedNotice ? 'Redirect blocked — player restored' : null}
           overlay={upNextCard}
           player={playerSurface}
@@ -1017,10 +948,8 @@ export default function MediaDetailPage() {
 
       {/* ── Main Hero Content Layout ── */}
       <div className="relative z-10 max-w-[1140px] mx-auto px-6 md:px-10 pb-20">
-        {/* The detail view's hero (poster, title, actions) — hidden while the
-            stage above has the screen. */}
-        {!showPlayer && (
-          <div className="min-h-[85vh] flex flex-col justify-end pb-20 md:pb-28">
+        {/* The detail view's hero (poster, title, actions) */}
+        <div className="min-h-[85vh] flex flex-col justify-end pb-20 md:pb-28">
             <div className="flex flex-col md:flex-row gap-8 md:gap-[38px] items-start md:items-end w-full pt-28 md:pt-0">
               {/* Poster */}
               <div className="flex-none w-[130px] sm:w-[150px] md:w-[180px] aspect-[2/3] rounded-[14px] overflow-hidden shadow-[0_24px_56px_rgba(0,0,0,0.6)] border border-white/[0.08] relative bg-void-2">
@@ -1052,19 +981,23 @@ export default function MediaDetailPage() {
                   )}
                 </div>
 
-                {/* Big, gradient-filled display title — the signature StreamVault flourish */}
-                <h1
-                  className="font-display text-[38px] sm:text-[52px] md:text-[68px] font-extrabold tracking-[-0.02em] leading-[0.98] mb-[18px]"
-                  style={{
-                    background:
-                      'linear-gradient(90deg, #ffffff 35%, var(--violet-light) 85%, var(--magenta) 110%)',
-                    WebkitBackgroundClip: 'text',
-                    WebkitTextFillColor: 'transparent',
-                    backgroundClip: 'text',
-                  }}
-                >
-                  {detail.title}
-                </h1>
+                {/* Title — official logo artwork when available, text fallback otherwise */}
+                {(isMovie ? movieDetail?.logoImg : (detail as TMDBTVDetail)?.logoImg) ? (
+                  <img
+                    src={(isMovie ? movieDetail?.logoImg : (detail as TMDBTVDetail)?.logoImg) as string}
+                    alt={detail.title}
+                    className="w-full max-w-[420px] h-auto mb-[18px] drop-shadow-[0_2px_16px_rgba(0,0,0,0.7)]"
+                  />
+                ) : (
+                  <h1
+                    className="font-display text-[38px] sm:text-[52px] md:text-[68px] font-extrabold tracking-[-0.02em] leading-[0.98] mb-[18px] uppercase text-white"
+                    style={{
+                      textShadow: '0 0 40px rgba(255,255,255,0.15), 0 2px 8px rgba(0,0,0,0.5)',
+                    }}
+                  >
+                    {detail.title}
+                  </h1>
+                )}
 
                 {/* Overview with inline MORE/LESS button */}
                 <div className="mb-5 text-[14.5px] leading-[1.65] text-muted-strong">
@@ -1113,9 +1046,7 @@ export default function MediaDetailPage() {
                     className="flex items-center gap-2 px-6 py-3 rounded-xl bg-white text-black font-bold text-sm hover:bg-zinc-200 transition-all shadow-lg cursor-pointer active:scale-95"
                   >
                     <Play className="w-4 h-4 fill-current" />
-                    {showPlayer
-                      ? 'Resume Watching'
-                      : lastWatched?.season && lastWatched?.episode
+                    {lastWatched?.season && lastWatched?.episode
                       ? `Resume S${lastWatched.season} E${lastWatched.episode}`
                       : lastWatched?.progress && lastWatched?.duration && lastWatched.duration > 0
                       ? `Resume (${Math.max(1, Math.round((lastWatched.duration - lastWatched.progress) / 60))}m left)`
@@ -1164,7 +1095,6 @@ export default function MediaDetailPage() {
               </div>
             </div>
           </div>
-        )}
 
         {/* ── Episode browsing rail (TV shows only) ── */}
         {!isMovie && (
