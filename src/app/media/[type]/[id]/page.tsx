@@ -1006,7 +1006,7 @@ export default function MediaDetailPage() {
                   />
                 ) : (
                   <h1
-                    className="font-sans text-[38px] sm:text-[52px] md:text-[68px] font-extrabold tracking-[-0.02em] leading-[0.98] mb-[18px] uppercase text-white"
+                    className="font-display text-[38px] sm:text-[52px] md:text-[68px] font-extrabold tracking-[-0.02em] leading-[0.98] mb-[18px] uppercase text-white"
                     style={{
                       textShadow: '0 0 40px rgba(255,255,255,0.15), 0 2px 8px rgba(0,0,0,0.5)',
                     }}
