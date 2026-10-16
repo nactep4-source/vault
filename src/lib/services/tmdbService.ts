@@ -165,6 +165,7 @@ export interface TMDBTVDetail {
   cast?: string[];
   creator?: string;
   certification?: string;
+  logoImg?: string | null;
 }
 
 // Poster URL helper
@@ -1174,7 +1175,8 @@ export async function getTVDetails(
 ): Promise<TMDBTVDetail | null> {
   try {
     const params: Record<string, string> = {
-      append_to_response: appendToResponse || 'credits,content_ratings',
+      append_to_response: appendToResponse || 'credits,content_ratings,images',
+      include_image_language: 'en,null',
     };
     const s = await tmdbFetch(`/tv/${tvId}`, params);
 
@@ -1191,6 +1193,13 @@ export async function getTVDetails(
     const usRating = (s.content_ratings?.results || []).find((r: any) => r.iso_3166_1 === 'US');
     const cert = usRating?.rating || undefined;
 
+    // Pick the best English (or language-neutral) logo from TMDB's image set.
+    const tvLogos = s.images?.logos || [];
+    const bestTvLogo = tvLogos
+      .filter((l: any) => l.iso_639_1 === 'en' || l.iso_639_1 === null)
+      .sort((a: any, b: any) => (b.vote_average || 0) - (a.vote_average || 0))[0];
+    const tvLogoImg = bestTvLogo ? `${TMDB_IMAGE_BASE}/w500${bestTvLogo.file_path}` : null;
+
     return {
       id: s.id,
       name: s.name || s.original_name,
@@ -1205,6 +1214,7 @@ export async function getTVDetails(
       cast: cast.length > 0 ? cast : undefined,
       creator,
       certification: cert,
+      logoImg: tvLogoImg,
     };
   } catch {
     const match = FALLBACK_SHOWS.find((f) => f.id === tvId);
@@ -1540,4 +1550,24 @@ export async function searchMulti(query: string): Promise<any> {
     first_air_date: `${s.year}-01-01`,
   }));
   return { results: [...matchedMovies, ...matchedShows] };
+}
+
+// Fetch just the best logo image for a movie or TV show — used by the home
+// page hero to show official title artwork instead of a text title.
+export async function getMediaLogo(
+  id: number,
+  type: 'movie' | 'tv'
+): Promise<string | null> {
+  try {
+    const data = await tmdbFetch(`/${type}/${id}/images`, {
+      include_image_language: 'en,null',
+    });
+    const logos = data.logos || [];
+    const best = logos
+      .filter((l: any) => l.iso_639_1 === 'en' || l.iso_639_1 === null)
+      .sort((a: any, b: any) => (b.vote_average || 0) - (a.vote_average || 0))[0];
+    return best ? `${TMDB_IMAGE_BASE}/w500${best.file_path}` : null;
+  } catch {
+    return null;
+  }
 }

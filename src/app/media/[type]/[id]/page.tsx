@@ -997,12 +997,12 @@ export default function MediaDetailPage() {
                   )}
                 </div>
 
-                {/* Movie title — official logo artwork when available, text fallback otherwise */}
-                {isMovie && movieDetail?.logoImg ? (
+                {/* Title — official logo artwork when available, text fallback otherwise */}
+                {(isMovie ? movieDetail?.logoImg : (detail as TMDBTVDetail)?.logoImg) ? (
                   <img
-                    src={movieDetail.logoImg}
+                    src={(isMovie ? movieDetail?.logoImg : (detail as TMDBTVDetail)?.logoImg) as string}
                     alt={detail.title}
-                    className="w-full max-w-[340px] h-auto mb-[18px] drop-shadow-[0_2px_12px_rgba(0,0,0,0.6)]"
+                    className="w-full max-w-[420px] h-auto mb-[18px] drop-shadow-[0_2px_16px_rgba(0,0,0,0.7)]"
                   />
                 ) : (
                   <h1

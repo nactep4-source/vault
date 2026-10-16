@@ -3,6 +3,7 @@ import MovieRow from '@/components/MovieRow';
 import HeroSpotlight from '@/components/HeroSpotlight';
 import TopSearchBar from '@/components/TopSearchBar';
 import RecentWatchedRow from '@/components/RecentWatchedRow';
+import { getMediaLogo } from '@/lib/services/tmdbService';
 
 const mockHero = {
   id: 1,
@@ -130,6 +131,17 @@ export default async function HomePage() {
     if (trendingItems[i]) heroItems.push({ ...trendingItems[i], mediaType: 'movie' as const });
     if (trendingTVItems[i]) heroItems.push({ ...trendingTVItems[i], mediaType: 'tv' as const });
   }
+
+  // Fetch official title artwork (logos) for the hero items so the hero
+  // shows each movie's stylized title treatment instead of plain text.
+  await Promise.all(
+    heroItems.map(async (item) => {
+      try {
+        const logo = await getMediaLogo(item.id, item.mediaType);
+        if (logo) item.logoImg = logo;
+      } catch {}
+    })
+  );
 
   return (
     <div className="page-enter min-h-screen bg-void text-foreground overflow-x-hidden font-sans antialiased selection:bg-violet selection:text-white">
