@@ -60,10 +60,11 @@ const DEFAULT_REFERRER_POLICY: React.HTMLAttributeReferrerPolicy = 'origin';
 
 const EMBED_SOURCES: EmbedSource[] = [
   {
-    // Our own player on the same provider MoviesAPI's embed uses, minus its ad
-    // scripts and popups. Being first makes it the default source, so "Watch
-    // now" plays through our player; when a title has no stream, the usual
-    // "Try next source" banner offers the third-party embeds.
+    // Our own unified player. Instead of exposing separate source tabs for each
+    // backend, this single source auto-cycles through all of them: it tries the
+    // fast vidora pair (moviesapi → vidsrc.pm) first, then VidCore, then VidSrc —
+    // moving to the next the moment the current one reports the title is not
+    // there or fails to load. The viewer sees one player, not a row of tabs.
     name: 'Direct',
     color: '#7B2FFF',
     own: true,
@@ -71,20 +72,6 @@ const EMBED_SOURCES: EmbedSource[] = [
       type === 'movie'
         ? `/embed/movie/${id}`
         : `/embed/tv/${id}?season=${s ?? 1}&episode=${e ?? 1}`,
-  },
-  {
-    // The same ad-free player, pinned to our second stream source (vidsrc.pm)
-    // instead of the first (moviesapi.to). The two carry different catalogues,
-    // so this is what to switch to when "Direct" has no stream for a title —
-    // although "Direct" itself already falls back to this source automatically.
-    name: 'Server 2',
-    color: '#22D3EE',
-    own: true,
-    server: 2,
-    getUrl: (id, type, s, e) =>
-      type === 'movie'
-        ? `/embed/movie/${id}?server=2`
-        : `/embed/tv/${id}?season=${s ?? 1}&episode=${e ?? 1}&server=2`,
   },
   {
     name: 'MoviesAPI',
@@ -96,70 +83,28 @@ const EMBED_SOURCES: EmbedSource[] = [
         : `https://moviesapi.to/tv/${id}/${s ?? 1}/${e ?? 1}`,
   },
   {
-    // Resolved server-side (server 3) and played in our own player. Its embed
-    // ships a popup/overlay ad SDK (/tc/ff-tag.php + /tc/ff-prime.php, the
-    // latter resetting the vendor's frequency caps on every click, so its ads
-    // come back) that clean mode could never remove — a proxied copy of that
-    // player cannot run. Playing its streams natively sidesteps the player
-    // entirely: the bundle resolves most of its servers through an aggregator
-    // that answers plain HLS links (see src/lib/server/directSources/vidcore.ts).
-    name: 'VidCore',
-    color: '#A78BFA',
-    own: true,
-    server: 3,
-    getUrl: (id, type, s, e) =>
-      type === 'movie'
-        ? `/embed/movie/${id}?server=3`
-        : `/embed/tv/${id}?season=${s ?? 1}&episode=${e ?? 1}&server=3`,
-  },
-  {
-    // Confirmed against vidcore.io's own docs — a different service from
-    // vidcore.org despite the similar name, hence the different URL shape
-    // (no /embed/ segment, params tuned to match the app's own chrome
-    // instead of their defaults: theme= matches --violet, and TV gets a
-    // native "Next Episode" button since VidCore.io actually supports one).
+    // A different service from vidcore.org despite the similar name, hence the
+    // different URL shape (no /embed/ segment, params tuned to match the app's
+    // own chrome instead of their defaults: theme= matches --violet, and TV
+    // gets a native "Next Episode" button since VidCore.io actually supports one).
     //
     // allow/referrerPolicy deliberately omitted (undefined) — a working
     // reference embed of this same service used neither attribute at all,
-    // just `allowfullscreen`, so this source skips both instead of
-    // inheriting the other sources' defaults.
-    //
-    // Domain switched from vidcore.io to vidcore.net — the reference embed
-    // pointed at .net (its DevTools baseURI still resolved to vidcore.io
-    // under the hood, confirming it's the same service), so this tries the
-    // domain that was actually observed working rather than the one from
-    // their docs page.
+    // just `allowfullscreen`, so this source skips both instead of inheriting
+    // the other sources' defaults.
     name: 'VidCore.io',
     color: '#22C55E',
-    // allow/referrerPolicy intentionally not set — see note above.
     getUrl: (id, type, s, e) => {
       const params = new URLSearchParams({
-        theme: '7B2FFF', // matches --violet, no # prefix per their docs
+        theme: '7B2FFF',
         autoPlay: 'true',
       });
       if (type === 'movie') {
         return `https://vidcore.net/movie/${id}?${params.toString()}`;
       }
-      params.set('nextButton', 'true'); // shows their native next-episode button; autoNext left off so it doesn't fight the app's own "Up Next" card
+      params.set('nextButton', 'true');
       return `https://vidcore.net/tv/${id}/${s ?? 1}/${e ?? 1}?${params.toString()}`;
     },
-  },
-  {
-    // Resolved server-side (server 4) and played in our own player: the embed
-    // could be neither sandboxed nor proxied — this player family refuses any
-    // sandboxed frame, and a proxied copy of its player is referrer-locked — so
-    // embedding it was the one way to keep its ad redirects, which nothing
-    // could block. Its own stream links need no such protection: /api/stream/direct
-    // walks the same chain the player does (vs_src.php → player page → apiToken
-    // → encrypted stream list → per-host token) and hands back a plain HLS link.
-    name: 'VidSrc',
-    color: '#38BDF8',
-    own: true,
-    server: 4,
-    getUrl: (id, type, s, e) =>
-      type === 'movie'
-        ? `/embed/movie/${id}?server=4`
-        : `/embed/tv/${id}?season=${s ?? 1}&episode=${e ?? 1}&server=4`,
   },
 ];
 
@@ -830,7 +775,7 @@ export default function MediaDetailPage() {
       mediaId={mediaId}
       season={selectedSeason}
       episode={selectedEpisode}
-      server={activeSource.server}
+      servers={[undefined, 3, 4]}
       onError={handleIframeError}
       onPlayingChange={setPlayerPlaying}
     />

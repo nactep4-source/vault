@@ -40,12 +40,14 @@ function EmbedPlayer() {
   const season = searchParams?.get('season') ?? '1';
   const episode = searchParams?.get('episode') ?? '1';
   // Optional: pin a stream source (1 = moviesapi, 2 = vidsrc.pm, 3 = VidCore,
-  // 4 = VidSrc). Without it /api/stream/direct uses the first source that
-  // carries the title; 3 and 4 are only ever used when pinned.
+  // 4 = VidSrc). Without it the player auto-cycles through all sources.
   const serverParam = searchParams?.get('server');
-  const server = ['1', '2', '3', '4'].includes(serverParam ?? '')
+  const pinnedServer = ['1', '2', '3', '4'].includes(serverParam ?? '')
     ? Number(serverParam)
     : undefined;
+  // If a specific server is pinned, try only that one. Otherwise let the
+  // player walk through all sources automatically.
+  const servers = pinnedServer !== undefined ? [pinnedServer] : undefined;
 
   // NOT `fixed inset-0`: every route is wrapped in `.page-enter`
   // (src/app/template.tsx), whose animation leaves a `transform` on the wrapper
@@ -61,7 +63,7 @@ function EmbedPlayer() {
         mediaId={mediaId}
         season={season}
         episode={episode}
-        server={server}
+        servers={servers}
       />
     </div>
   );
